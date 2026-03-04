@@ -68,7 +68,7 @@ load_dotenv()
 # Initialize Groq LLM
 # -----------------------------
 llm = ChatGroq(
-    model="llama3-8b-8192",
+    model="llama-3.3-70b-versatile",
     groq_api_key=os.getenv("GROQ_API_KEY")
 )
 
@@ -165,4 +165,4 @@ def reset_conversation():
 
 if __name__ == "__main__":
     # start the app with uvicorn for local testing
-    uvicorn.run("agent.chatbot1:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("chatbot1:app", host="127.0.0.1", port=8000, reload=True)
