@@ -1,13 +1,18 @@
+# Use official Python image
 FROM python:3.11-slim
 
+# Set working directory
 WORKDIR /app
 
-COPY requirements.txt .
+# Copy project code
+COPY . /app
 
-RUN pip install --no-cache-dir -r requirements.txt
+# Upgrade pip and install dependencies
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
 
-COPY . .
+# Expose port for FastAPI
+EXPOSE 8080
 
-EXPOSE 8000
-
-CMD ["uvicorn", "dev-architect.src.agent.chatbot1:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start FastAPI app
+CMD ["uvicorn", "src.app:app", "--host", "0.0.0.0", "--port", "8080"]--host", "0.0.0.0", "--port", "8000"]
