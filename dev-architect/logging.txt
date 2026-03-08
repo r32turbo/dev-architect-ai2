@@ -1,0 +1,15 @@
+Conversation Log
+You: hello
+AI: reply
+End of Log
+
+Conversation Log
+You: hello
+AI: reply
+End of Log
+
+Conversation Log
+You: world
+AI: foo
+End of Log
+
