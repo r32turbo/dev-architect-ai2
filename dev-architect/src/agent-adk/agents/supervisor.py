@@ -56,10 +56,10 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from reusableagents.agents.react_agent import AgentResponse
-from reusableagents.agents.validator import OutputValidator
-from reusableagents.config.settings import ExecutionMode, SupervisorConfig
-from reusableagents.prompts.base import PromptBuilder
+from agents.react_agent import AgentResponse
+from agents.validator import OutputValidator
+from config.settings import ExecutionMode, SupervisorConfig
+from prompts.base import PromptBuilder
 
 logger = logging.getLogger(__name__)
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from langchain_google_vertexai import ChatVertexAI
 
-from reusableagents.config.settings import GeminiConfig
+from config.settings import GeminiConfig
 
 
 def create_agent_llm(config: GeminiConfig | None = None) -> ChatVertexAI:

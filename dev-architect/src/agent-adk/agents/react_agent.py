@@ -39,9 +39,9 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
-from reusableagents.agents.validator import OutputValidator
-from reusableagents.config.settings import AgentConfig
-from reusableagents.prompts.base import PromptBuilder
+from agents.validator import OutputValidator
+from config.settings import AgentConfig
+from prompts.base import PromptBuilder
 
 logger = logging.getLogger(__name__)
 
