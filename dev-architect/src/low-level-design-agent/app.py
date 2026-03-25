@@ -11,7 +11,16 @@ from langgraph.graph import END, START, StateGraph
 try:
     from .state import LLDAgentState, LLD_INPUT
 except ImportError:
-    from state import LLDAgentState, LLD_INPUT
+    current_dir = Path(__file__).resolve().parent
+    state_spec = importlib.util.spec_from_file_location(
+        "low_level_design_state", current_dir / "state.py"
+    )
+    if state_spec is None or state_spec.loader is None:
+        raise RuntimeError("Unable to load local state.py")
+    state_module = importlib.util.module_from_spec(state_spec)
+    state_spec.loader.exec_module(state_module)
+    LLDAgentState = state_module.LLDAgentState
+    LLD_INPUT = state_module.LLD_INPUT
 
 try:
     from .prompts import (
@@ -21,11 +30,17 @@ try:
     )
 except ImportError:
     # Fallback for direct script execution (python app.py).
-    from prompts import (
-        ARCHITECTURE_ANALYSIS_PROMPT,
-        REPORT_GENERATION_PROMPT,
-        SECTION_EXTRACTION_PROMPT,
+    current_dir = Path(__file__).resolve().parent
+    prompts_spec = importlib.util.spec_from_file_location(
+        "low_level_design_prompts", current_dir / "prompts.py"
     )
+    if prompts_spec is None or prompts_spec.loader is None:
+        raise RuntimeError("Unable to load local prompts.py")
+    prompts_module = importlib.util.module_from_spec(prompts_spec)
+    prompts_spec.loader.exec_module(prompts_module)
+    ARCHITECTURE_ANALYSIS_PROMPT = prompts_module.ARCHITECTURE_ANALYSIS_PROMPT
+    REPORT_GENERATION_PROMPT = prompts_module.REPORT_GENERATION_PROMPT
+    SECTION_EXTRACTION_PROMPT = prompts_module.SECTION_EXTRACTION_PROMPT
 
 load_dotenv()
 
@@ -36,6 +51,9 @@ def _register_agent_adk_package() -> None:
         return
 
     adk_root = Path(__file__).resolve().parents[1] / "agent-adk"
+    if str(adk_root) not in sys.path:
+        sys.path.insert(0, str(adk_root))
+
     reusableagents_pkg = types.ModuleType("reusableagents")
     reusableagents_pkg.__path__ = [str(adk_root)]
     sys.modules["reusableagents"] = reusableagents_pkg
@@ -44,13 +62,13 @@ def _register_agent_adk_package() -> None:
 _register_agent_adk_package()
 
 ReusableReActAgent = importlib.import_module(
-    "reusableagents.agents.react_agent"
+    "agents.react_agent"
 ).ReusableReActAgent
 OutputValidator = importlib.import_module(
-    "reusableagents.agents.validator"
+    "agents.validator"
 ).OutputValidator
-AgentConfig = importlib.import_module("reusableagents.config.settings").AgentConfig
-PromptBuilder = importlib.import_module("reusableagents.prompts.base").PromptBuilder
+AgentConfig = importlib.import_module("config.settings").AgentConfig
+PromptBuilder = importlib.import_module("prompts.base").PromptBuilder
 
 
 llm = ChatVertexAI(

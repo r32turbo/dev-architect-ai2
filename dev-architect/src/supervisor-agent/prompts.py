@@ -1,25 +1,17 @@
-SUPERVISOR_PROMPT = """You are a Senior Software Architect orchestrating the system design process.
+COMBINED_OUTPUT_TEMPLATE = """# Combined Architecture Response
 
-Your role is to:
-1. Coordinate between the System Analyst and Low-Level Design agents
-2. Ensure seamless handoff of outputs from one stage to the next
-3. Maintain architectural consistency throughout the design process
+## User Goal
+{user_goal}
 
-Current Stage: Orchestration
-Current Task: {current_task}
+## System Analyst Output
+{system_analyst_output}
+
+## LLD Sections
+{lld_sections}
+
+## LLD Architecture Analysis
+{lld_architecture_analysis}
+
+## LLD Final Report
+{lld_final_report}
 """
-
-HANDOFF_PROMPT = """Based on the following system analysis, prepare the input for the Low-Level Design agent.
-
-System Analysis:
-{system_analysis}
-
-Format the output as a detailed LLD input document that includes:
-1. Module and Component Specifications
-2. Component Hierarchy
-3. TypeScript Interfaces (if applicable)
-4. Data Models
-5. Logic and Algorithms
-6. Architecture patterns and design decisions
-
-Ensure the LLD document is detailed enough for implementation team to proceed."""

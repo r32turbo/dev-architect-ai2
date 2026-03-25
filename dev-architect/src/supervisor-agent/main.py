@@ -1,114 +1,48 @@
-"""
-Supervisor Agent: Orchestrates System Analyst and Low-Level Design Agents.
-
-This agent manages the workflow:
-1. User Goal -> System Analyst Agent -> System Requirements
-2. System Requirements -> LLD Agent -> LLD Report
-"""
-
-import os
-import sys
-import types
-import importlib
 import importlib.util
-import warnings
+import json
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
-from typing import TypedDict
+from types import ModuleType
 
 from dotenv import load_dotenv
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import END, START, StateGraph
 
 try:
-    from langchain_google_vertexai import ChatVertexAI
+    from .prompts import COMBINED_OUTPUT_TEMPLATE
+    from .state import SupervisorState
 except ImportError:
-    ChatVertexAI = None  # type: ignore
+    current_dir = Path(__file__).resolve().parent
 
-# Hide known ChatVertexAI deprecation warnings
-warnings.filterwarnings(
-    "ignore",
-    message=r".*ChatVertexAI.*deprecated.*",
-    category=Warning,
-)
-warnings.filterwarnings(
-    "ignore",
-    message=r".*Use \[`ChatGoogleGenerativeAI`\].*",
-    category=Warning,
-)
-
-# ============ SETUP PATHS AND IMPORTS ============
-
-ADK_ROOT = Path(__file__).resolve().parents[1] / "agent-adk"
-if str(ADK_ROOT) not in sys.path:
-    sys.path.insert(0, str(ADK_ROOT))
-
-SUPERVISOR_ROOT = Path(__file__).resolve().parent
-SYSTEM_ANALYST_ROOT = Path(__file__).resolve().parents[1] / "system-analyst-agent"
-LLD_AGENT_ROOT = Path(__file__).resolve().parents[1] / "low-level-design-agent"
-
-# Load environment early
-load_dotenv()
-
-# Import supervisor-specific modules first (use absolute imports to avoid conflicts)
-sup_state_spec = importlib.util.spec_from_file_location("supervisor_state", SUPERVISOR_ROOT / "state.py")
-supervisor_state_mod = importlib.util.module_from_spec(sup_state_spec)
-sup_state_spec.loader.exec_module(supervisor_state_mod)
-SupervisorState = supervisor_state_mod.SupervisorState  # type: ignore
-
-sup_prompts_spec = importlib.util.spec_from_file_location("supervisor_prompts", SUPERVISOR_ROOT / "prompts.py")
-supervisor_prompts_mod = importlib.util.module_from_spec(sup_prompts_spec)
-sup_prompts_spec.loader.exec_module(supervisor_prompts_mod)
-HANDOFF_PROMPT = supervisor_prompts_mod.HANDOFF_PROMPT  # type: ignore
-
-# Import system analyst prompt
-sa_prompt_spec = importlib.util.spec_from_file_location("system_analyst_prompt", SYSTEM_ANALYST_ROOT / "prompt.py")
-sa_prompt_mod = importlib.util.module_from_spec(sa_prompt_spec)
-sa_prompt_spec.loader.exec_module(sa_prompt_mod)
-SYSTEM_ANALYST_PROMPT = sa_prompt_mod.SYSTEM_ANALYST_PROMPT  # type: ignore
-
-# Import LLD agent modules using sys.path
-if str(LLD_AGENT_ROOT) not in sys.path:
-    sys.path.insert(0, str(LLD_AGENT_ROOT))
-
-try:
-    from app import graph as lld_graph  # type: ignore
-except ImportError:
-    lld_graph = None
-
-# ============ LOAD ADK COMPONENTS ============
-
-def load_adk_components():
-    """Load reusable agent components from ADK."""
-    react_mod = importlib.import_module("reusableagents.agents.react_agent")
-    prompts_mod = importlib.import_module("reusableagents.prompts.base")
-    config_mod = importlib.import_module("reusableagents.config.settings")
-    validator_mod = importlib.import_module("reusableagents.agents.validator")
-    return (
-        react_mod.ReusableReActAgent,
-        prompts_mod.PromptBuilder,
-        config_mod.AgentConfig,
-        validator_mod.OutputValidator,
+    prompts_spec = importlib.util.spec_from_file_location(
+        "supervisor_agent_prompts", current_dir / "prompts.py"
     )
+    if prompts_spec is None or prompts_spec.loader is None:
+        raise RuntimeError("Unable to load supervisor prompts module")
+    prompts_module = importlib.util.module_from_spec(prompts_spec)
+    prompts_spec.loader.exec_module(prompts_module)
+
+    state_spec = importlib.util.spec_from_file_location(
+        "supervisor_agent_state", current_dir / "state.py"
+    )
+    if state_spec is None or state_spec.loader is None:
+        raise RuntimeError("Unable to load supervisor state module")
+    state_module = importlib.util.module_from_spec(state_spec)
+    state_spec.loader.exec_module(state_module)
+
+    COMBINED_OUTPUT_TEMPLATE = prompts_module.COMBINED_OUTPUT_TEMPLATE
+    SupervisorState = state_module.SupervisorState
 
 
-def _register_agent_adk_package() -> None:
-    """Expose src/agent-adk as importable package name `reusableagents`."""
-    if "reusableagents" in sys.modules:
-        return
-
-    adk_root = Path(__file__).resolve().parents[1] / "agent-adk"
-    reusableagents_pkg = types.ModuleType("reusableagents")
-    reusableagents_pkg.__path__ = [str(adk_root)]
-    sys.modules["reusableagents"] = reusableagents_pkg
+SRC_DIR = Path(__file__).resolve().parents[1]
+SYSTEM_ANALYST_DIR = SRC_DIR / "system-analyst-agent"
+LLD_DIR = SRC_DIR / "low-level-design-agent"
+SYSTEM_ANALYST_MAIN_PATH = SYSTEM_ANALYST_DIR / "main.py"
+LLD_APP_PATH = LLD_DIR / "app.py"
 
 
-# Register ADK package alias
-_register_agent_adk_package()
-
-
-# ============ ENVIRONMENT & LLM SETUP ============
-
-def load_environment():
-    """Load environment from .env file."""
+def _load_environment() -> None:
     for path in [Path.cwd(), *Path.cwd().parents]:
         env_file = path / ".env"
         if env_file.exists():
@@ -116,248 +50,135 @@ def load_environment():
             break
 
 
-def create_llm(model: str):
-    """Create ChatVertexAI LLM instance."""
-    if ChatVertexAI is None:
-        raise ImportError(
-            "langchain-google-vertexai is required for supervisor agent. "
-            "Install it with: pip install langchain-google-vertexai"
+def _load_module(module_name: str, file_path: Path) -> ModuleType:
+    module_dir = str(file_path.parent)
+    if module_dir not in sys.path:
+        sys.path.insert(0, module_dir)
+
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load module from {file_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_system_analyst(state: dict[str, str]) -> dict[str, str]:
+    prompt_module = _load_module("system_analyst_prompt", SYSTEM_ANALYST_DIR / "prompt.py")
+    sys.modules["prompt"] = prompt_module
+
+    system_analyst_module = _load_module("system_analyst_main", SYSTEM_ANALYST_MAIN_PATH)
+    if hasattr(system_analyst_module, "load_environment"):
+        system_analyst_module.load_environment()
+
+    analyst_agent = system_analyst_module.build_agent()
+    result = analyst_agent.run(user_goal=state["user_goal"])
+    output = result.output if hasattr(result, "output") else str(result)
+
+    return {"system_analyst_output": str(output).strip()}
+
+
+def run_lld_agent(state: dict[str, str]) -> dict[str, str]:
+    lld_runner = textwrap.dedent(
+        """
+        import importlib.util
+        import json
+        import sys
+
+        app_path = sys.argv[1]
+        lld_input = sys.stdin.read()
+
+        spec = importlib.util.spec_from_file_location("low_level_design_app", app_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Unable to load LLD app from {app_path}")
+
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        result = module.graph.invoke({"lld_input": lld_input})
+        print(
+            json.dumps(
+                {
+                    "sections": str(result.get("sections", "")).strip(),
+                    "architecture_analysis": str(result.get("architecture_analysis", "")).strip(),
+                    "final_report": str(result.get("final_report", "")).strip(),
+                }
+            )
         )
-    
-    return ChatVertexAI(
-        model_name=model,
-        project=os.getenv("GOOGLE_CLOUD_PROJECT", "eds-alchemy"),
-        location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
-        temperature=0.0,
-        max_output_tokens=8192,
+        """
+    ).strip()
+
+    completed = subprocess.run(
+        [sys.executable, "-c", lld_runner, str(LLD_APP_PATH)],
+        input=state["system_analyst_output"],
+        capture_output=True,
+        text=True,
+        check=True,
     )
 
+    stdout_lines = [line for line in completed.stdout.splitlines() if line.strip()]
+    if not stdout_lines:
+        raise RuntimeError("LLD subprocess produced no output.")
 
-# ============ AGENT BUILDERS ============
+    lld_output = json.loads(stdout_lines[-1])
 
-def build_system_analyst_agent():
-    """Build the system analyst agent."""
-    ReusableReActAgent, PromptBuilder, AgentConfig, OutputValidator = load_adk_components()
-    
-    llm = create_llm(os.getenv("GEMINI_AGENT_MODEL", "gemini-2.5-flash-lite"))
-    validator_llm = create_llm(os.getenv("GEMINI_VALIDATOR_MODEL", "gemini-2.5-flash-lite"))
-    
-    validator = OutputValidator(llm=validator_llm)
-    
-    prompt_builder = (
-        PromptBuilder()
-        .add_system(SYSTEM_ANALYST_PROMPT)
-        .add_user("{user_goal}")
-    )
-    
-    return ReusableReActAgent(
-        tools=[],
-        llm=llm,
-        prompt_builder=prompt_builder,
-        validator=validator,
-        config=AgentConfig(
-            max_react_iterations=5,
-            enable_validation=True,
-            max_refinement_attempts=2,
-        ),
+    return {
+        "lld_sections": str(lld_output.get("sections", "")).strip(),
+        "lld_architecture_analysis": str(lld_output.get("architecture_analysis", "")).strip(),
+        "lld_final_report": str(lld_output.get("final_report", "")).strip(),
+    }
+
+
+def combine_output(state: dict[str, str]) -> dict[str, str]:
+    combined = COMBINED_OUTPUT_TEMPLATE.format(
+        user_goal=state["user_goal"],
+        system_analyst_output=state["system_analyst_output"],
+        lld_sections=state["lld_sections"],
+        lld_architecture_analysis=state["lld_architecture_analysis"],
+        lld_final_report=state["lld_final_report"],
     )
 
-
-def build_lld_handoff_agent():
-    """Build a helper agent to convert system analyst output to LLD input."""
-    ReusableReActAgent, PromptBuilder, AgentConfig, OutputValidator = load_adk_components()
-    
-    llm = create_llm(os.getenv("GEMINI_AGENT_MODEL", "gemini-2.5-flash-lite"))
-    validator_llm = create_llm(os.getenv("GEMINI_VALIDATOR_MODEL", "gemini-2.5-flash-lite"))
-    
-    validator = OutputValidator(llm=validator_llm)
-    
-    prompt_builder = (
-        PromptBuilder()
-        .add_system("You are a software architect preparing low-level design inputs.")
-        .add_user("{handoff_prompt}")
-    )
-    
-    return ReusableReActAgent(
-        tools=[],
-        llm=llm,
-        prompt_builder=prompt_builder,
-        validator=validator,
-        config=AgentConfig(
-            max_react_iterations=3,
-            enable_validation=True,
-            max_refinement_attempts=1,
-        ),
-    )
+    return {"final_output": combined.strip()}
 
 
-# ============ GRAPH NODES ============
-
-def system_analyst_node(state: SupervisorState) -> dict:
-    """Execute system analyst agent."""
-    print("\n[Supervisor] --> Running System Analyst Agent...")
-    result = system_analyst_agent.run(user_goal=state["user_goal"])
-    output = result.output if hasattr(result, 'output') else str(result)
-    
-    print(f"[Supervisor] <-- System Analyst Output received ({len(output)} chars)")
-    
-    return {"system_analyst_output": output}
-
-
-def handoff_node(state: SupervisorState) -> dict:
-    """Convert system analyst output to LLD input format."""
-    print("\n[Supervisor] --> Preparing LLD input from system analyst output...")
-    
-    handoff_prompt = HANDOFF_PROMPT.format(
-        system_analysis=state["system_analyst_output"]
-    )
-    
-    result = lld_handoff_agent.run(handoff_prompt=handoff_prompt)
-    lld_input = result.output if hasattr(result, 'output') else str(result)
-    
-    print(f"[Supervisor] <-- LLD input prepared ({len(lld_input)} chars)")
-    
-    return {"lld_input": lld_input}
-
-
-def lld_agent_node(state: SupervisorState) -> dict:
-    """Execute LLD agent."""
-    print("\n[Supervisor] --> Running Low-Level Design Agent...")
-    
-    if lld_graph is None:
-        print("[Supervisor] WARNING: LLD graph not available, skipping LLD execution")
-        return {
-            "lld_sections": "",
-            "lld_architecture_analysis": "",
-            "lld_final_report": "LLD agent unavailable",
-        }
-    
-    # Prepare input for LLD graph
-    lld_input = state.get("lld_input", state.get("system_analyst_output", ""))
-    
-    try:
-        lld_result = lld_graph.invoke({
-            "lld_input": lld_input,
-            "sections": "",
-            "architecture_analysis": "",
-            "final_report": "",
-        })
-        
-        print(f"[Supervisor] <-- LLD Agent execution complete")
-        
-        return {
-            "lld_sections": lld_result.get("sections", ""),
-            "lld_architecture_analysis": lld_result.get("architecture_analysis", ""),
-            "lld_final_report": lld_result.get("final_report", ""),
-        }
-    except Exception as e:
-        print(f"[Supervisor] ERROR in LLD execution: {e}")
-        return {
-            "lld_sections": "",
-            "lld_architecture_analysis": "",
-            "lld_final_report": f"Error: {str(e)}",
-        }
-
-
-def finalize_node(state: SupervisorState) -> dict:
-    """Finalize and compose output from both agents."""
-    print("\n[Supervisor] --> Finalizing output...")
-    
-    final_output = f"""
-# COMPLETE SYSTEM DESIGN REPORT
-
-## Executive Summary
-User Goal: {state["user_goal"]}
-
----
-
-## PHASE 1: SYSTEM ANALYSIS
-
-{state["system_analyst_output"]}
-
----
-
-## PHASE 2: LOW-LEVEL DESIGN
-
-### LLD Sections
-{state["lld_sections"]}
-
-### Architecture Analysis
-{state["lld_architecture_analysis"]}
-
-### Final LLD Report
-{state["lld_final_report"]}
-
----
-
-**Generated by Supervisor Agent (System Analyst + LLD Agent)**
-"""
-    
-    print(f"[Supervisor] <-- Final output composed ({len(final_output)} chars)")
-    
-    return {"final_output": final_output}
-
-
-# ============ BUILD GRAPH ============
-
-def build_supervisor_graph():
-    """Build the supervisor orchestration graph."""
+def build_graph():
     graph = StateGraph(SupervisorState)
-    
-    # Add nodes
-    graph.add_node("system_analyst", system_analyst_node)
-    graph.add_node("handoff", handoff_node)
-    graph.add_node("lld_agent", lld_agent_node)
-    graph.add_node("finalize", finalize_node)
-    
-    # Define edges
+
+    graph.add_node("system_analyst", run_system_analyst)
+    graph.add_node("low_level_design", run_lld_agent)
+    graph.add_node("combine", combine_output)
+
     graph.add_edge(START, "system_analyst")
-    graph.add_edge("system_analyst", "handoff")
-    graph.add_edge("handoff", "lld_agent")
-    graph.add_edge("lld_agent", "finalize")
-    graph.add_edge("finalize", END)
-    
+    graph.add_edge("system_analyst", "low_level_design")
+    graph.add_edge("low_level_design", "combine")
+    graph.add_edge("combine", END)
+
     return graph.compile()
 
 
-# ============ MAIN ============
+def main() -> None:
+    _load_environment()
+    app = build_graph()
 
-def main():
-    """Main entry point for supervisor agent."""
-    load_environment()
-    
-    global system_analyst_agent, lld_handoff_agent
-    
-    print("[Supervisor] Initializing agents...")
-    system_analyst_agent = build_system_analyst_agent()
-    lld_handoff_agent = build_lld_handoff_agent()
-    
-    supervisor_app = build_supervisor_graph()
-    
-    # Example user goal - can be customized
-    user_goal = "Create a one-page marketing website using NextJS with contact form, services showcase, and call-to-action buttons."
-    
-    print(f"\n[Supervisor] Starting orchestration with goal: {user_goal}")
-    print("=" * 80)
-    
-    result = supervisor_app.invoke({
+    user_goal = (
+        " ".join(sys.argv[1:]).strip()
+        if len(sys.argv) > 1
+        else "Design an AI-powered customer support assistant platform."
+    )
+
+    initial_state = {
         "user_goal": user_goal,
         "system_analyst_output": "",
         "lld_sections": "",
         "lld_architecture_analysis": "",
         "lld_final_report": "",
         "final_output": "",
-    })
-    
-    print("\n" + "=" * 80)
-    print("[Supervisor] Orchestration complete!")
-    print("=" * 80)
-    
-    # Output final result
-    if result.get("final_output"):
-        print(result["final_output"])
-    else:
-        print("[ERROR] No final output generated")
+    }
+
+    result = app.invoke(initial_state)
+    print(result.get("final_output", "No output generated."))
 
 
 if __name__ == "__main__":
