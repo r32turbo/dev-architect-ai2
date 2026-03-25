@@ -100,7 +100,7 @@ def build_agent():
         validator=validator,
         config=AgentConfig(
             max_react_iterations=5,
-            enable_validation=True,
+            enable_validation=False,
             max_refinement_attempts=2,
         ),
     )
