@@ -1,4 +1,6 @@
-def clean_text(text: str) -> str:
-    if not text:
-        return ""
-    return text.strip()
+def print_lld(content: str) -> None:
+    print("\n" + "=" * 70)
+    print("  GENERATED LOW-LEVEL DESIGN DOCUMENT")
+    print("=" * 70 + "\n")
+    print(content)
+    print("\n" + "=" * 70)

@@ -1,17 +1,21 @@
-from state import AgentState
-from graph import run_lld_agent
+import logging
+from graph import build_graph
+from state import ARCHITECTURE_DOC
+from utils import print_lld
 
-
-def main():
-
-    state = AgentState(
-        architecture_text="Architecture text will come from previous agent"
-    )
-
-    result_state = run_lld_agent(state)
-
-    print(result_state.lld_output)
-
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s – %(message)s",
+)
 
 if __name__ == "__main__":
-    main()
+    print("\nFrontend LLD Agent")
+    print("─" * 40)
+
+    graph = build_graph()
+    result = graph.invoke({
+        "architecture_doc": ARCHITECTURE_DOC,
+        "final_lld": "",
+    })
+
+    print_lld(result["final_lld"])
