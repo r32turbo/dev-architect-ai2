@@ -377,6 +377,16 @@ def main() -> None:
 
     result = supervisor.run(task=user_goal)
     output = result.output if hasattr(result, "output") else str(result)
+
+    # Some model/tooling paths occasionally return an empty output payload.
+    # Retry once before surfacing a no-output message.
+    if not str(output).strip():
+        retry_result = supervisor.run(task=user_goal)
+        retry_output = (
+            retry_result.output if hasattr(retry_result, "output") else str(retry_result)
+        )
+        output = retry_output
+
     print(output if str(output).strip() else "No output generated.")
 
 
