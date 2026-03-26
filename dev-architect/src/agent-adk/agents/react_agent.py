@@ -215,10 +215,14 @@ class ReusableReActAgent:
                 f"got {type(llm).__name__!r}"
             )
         if not isinstance(prompt_builder, PromptBuilder):
-            raise TypeError(
-                f"prompt_builder must be a PromptBuilder instance, "
-                f"got {type(prompt_builder).__name__!r}"
-            )
+            # Accept equivalent PromptBuilder objects loaded through alternate
+            # import paths (for example reusableagents.prompts.base vs prompts.base).
+            is_compatible_prompt_builder = type(prompt_builder).__name__ == "PromptBuilder"
+            if not is_compatible_prompt_builder:
+                raise TypeError(
+                    f"prompt_builder must be a PromptBuilder instance, "
+                    f"got {type(prompt_builder).__name__!r}"
+                )
         if validator is not None and not isinstance(validator, OutputValidator):
             raise TypeError(
                 f"validator must be an OutputValidator instance or None, "
