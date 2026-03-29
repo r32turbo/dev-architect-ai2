@@ -35,6 +35,7 @@ class GeminiConfig(BaseModel):
         validator_temperature: Sampling temperature for the validator LLM in
                                ``[0.0, 2.0]``.  Usually kept at 0.0.
         max_output_tokens:     Maximum tokens the models may generate (> 0).
+        timeout_seconds:       Request timeout (in seconds) for model calls.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -75,6 +76,11 @@ class GeminiConfig(BaseModel):
         default=8192,
         gt=0,
         description="Maximum number of tokens either model may generate per call.",
+    )
+    timeout_seconds: int = Field(
+        default=120,
+        gt=0,
+        description="Timeout in seconds for each model request.",
     )
 
 

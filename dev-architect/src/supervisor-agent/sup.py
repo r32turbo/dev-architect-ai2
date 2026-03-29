@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import textwrap
 import types
 from pathlib import Path
@@ -174,10 +175,20 @@ class LLDWorker:
 
     def run(self, task: str):
         try:
-            # Always use branch version for subprocess isolation to avoid module collisions.
-            # The branch version is guaranteed to have all required files and dependencies.
-            branch_name = os.getenv("LLD_SOURCE_BRANCH", "fb-lld-creatingagent")
-            lld_app_path = _materialize_lld_app_from_branch(branch_name)
+            # Prefer local LLD app so local prompt/code edits are applied.
+            # Set LLD_FORCE_BRANCH=1 to always load branch materialization.
+            force_branch = os.getenv("LLD_FORCE_BRANCH", "0").strip().lower() in {
+                "1", "true", "yes", "on"
+            }
+            if force_branch:
+                branch_name = os.getenv("LLD_SOURCE_BRANCH", "fb-lld-creatingagent")
+                lld_app_path = _materialize_lld_app_from_branch(branch_name)
+            else:
+                try:
+                    lld_app_path = _resolve_lld_app_path()
+                except FileNotFoundError:
+                    branch_name = os.getenv("LLD_SOURCE_BRANCH", "fb-lld-creatingagent")
+                    lld_app_path = _materialize_lld_app_from_branch(branch_name)
 
             runner = textwrap.dedent(
                 """
@@ -301,6 +312,103 @@ class LLDWorker:
         return self._agent_response_type(output=json.dumps(payload, ensure_ascii=True))
 
 
+def _extract_output_text(result: Any) -> str:
+    return result.output if hasattr(result, "output") else str(result)
+
+
+def _run_with_timeout(func: Any, timeout_seconds: int, *args: Any, **kwargs: Any) -> tuple[bool, Any]:
+    """Run a callable with a timeout. Returns (completed, result_or_exc)."""
+    holder: dict[str, Any] = {}
+
+    def _target() -> None:
+        try:
+            holder["result"] = func(*args, **kwargs)
+        except Exception as exc:  # pragma: no cover - defensive wrapper
+            holder["error"] = exc
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    thread.join(timeout_seconds)
+
+    if thread.is_alive():
+        return False, TimeoutError(f"Operation timed out after {timeout_seconds}s")
+    if "error" in holder:
+        return True, holder["error"]
+    return True, holder.get("result")
+
+
+def _is_complete_combined_output(text: str) -> bool:
+    required_sections = [
+        "## User Goal",
+        "## System Analyst Output",
+        "## LLD Sections",
+        "## LLD Architecture Analysis",
+        "## LLD Final Report",
+    ]
+    normalized = str(text or "")
+    return all(section in normalized for section in required_sections)
+
+
+def _render_combined_output(
+    user_goal: str,
+    system_analyst_output: str,
+    lld_sections: str,
+    lld_architecture_analysis: str,
+    lld_final_report: str,
+) -> str:
+    return (
+        "## User Goal\n\n"
+        f"{user_goal}\n\n"
+        "## System Analyst Output\n\n"
+        f"{system_analyst_output}\n\n"
+        "## LLD Sections\n\n"
+        f"{lld_sections}\n\n"
+        "## LLD Architecture Analysis\n\n"
+        f"{lld_architecture_analysis}\n\n"
+        "## LLD Final Report\n\n"
+        f"{lld_final_report}"
+    ).strip()
+
+
+def _run_direct_fallback_pipeline(user_goal: str) -> str:
+    (
+        _SupervisorAgent,
+        _WorkerSpec,
+        AgentResponse,
+        _create_agent_llm,
+        _PromptBuilder,
+        _SupervisorConfig,
+        _ExecutionMode,
+        _GeminiConfig,
+    ) = _load_adk_components()
+
+    system_worker = SystemAnalystWorker(AgentResponse)
+    lld_worker = LLDWorker(AgentResponse)
+
+    analyst_result = system_worker.run(user_goal)
+    analyst_text = str(_extract_output_text(analyst_result)).strip()
+
+    lld_result = lld_worker.run(analyst_text)
+    lld_raw = str(_extract_output_text(lld_result)).strip()
+
+    try:
+        payload = json.loads(lld_raw) if lld_raw else {}
+    except json.JSONDecodeError:
+        payload = {
+            "sections": "",
+            "architecture_analysis": "",
+            "final_report": lld_raw,
+        }
+
+    return _render_combined_output(
+        user_goal=user_goal,
+        system_analyst_output=analyst_text,
+        lld_sections=str(payload.get("sections", "")).strip(),
+        lld_architecture_analysis=str(payload.get("architecture_analysis", "")).strip(),
+        lld_final_report=str(payload.get("final_report", "")).strip(),
+    )
+
+
 def build_supervisor_agent():
     (
         SupervisorAgent,
@@ -338,6 +446,8 @@ def build_supervisor_agent():
         location=os.getenv("GOOGLE_CLOUD_LOCATION", os.getenv("GEMINI_LOCATION", "us-central1")),
         agent_model="gemini-2.5-flash-lite",
         validator_model="gemini-2.5-flash-lite",
+        max_output_tokens=int(os.getenv("SUPERVISOR_MAX_OUTPUT_TOKENS", "16384")),
+        timeout_seconds=int(os.getenv("SUPERVISOR_MODEL_TIMEOUT_SECONDS", "120")),
     )
 
     return SupervisorAgent(
@@ -367,7 +477,9 @@ def build_supervisor_agent():
 
 def main() -> None:
     _load_environment()
+    print("Starting supervisor pipeline...", flush=True)
     supervisor = build_supervisor_agent()
+    pipeline_timeout_seconds = int(os.getenv("SUPERVISOR_PIPELINE_TIMEOUT_SECONDS", "180"))
 
     user_goal = (
         " ".join(sys.argv[1:]).strip()
@@ -375,17 +487,65 @@ def main() -> None:
         else "Create a one page marketing website using NextJS ."
     )
 
-    result = supervisor.run(task=user_goal)
-    output = result.output if hasattr(result, "output") else str(result)
+    print("Running supervisor orchestrator...", flush=True)
+    completed, run_result = _run_with_timeout(
+        supervisor.run,
+        pipeline_timeout_seconds,
+        task=user_goal,
+    )
+    if not completed:
+        print(
+            f"Supervisor orchestrator timed out after {pipeline_timeout_seconds}s; "
+            "switching to direct fallback pipeline.",
+            flush=True,
+        )
+        run_result = None
+
+    output = ""
+    if isinstance(run_result, Exception):
+        print(f"Supervisor orchestrator failed: {run_result}", flush=True)
+    elif run_result is not None:
+        output = str(_extract_output_text(run_result)).strip()
 
     # Some model/tooling paths occasionally return an empty output payload.
     # Retry once before surfacing a no-output message.
-    if not str(output).strip():
-        retry_result = supervisor.run(task=user_goal)
-        retry_output = (
-            retry_result.output if hasattr(retry_result, "output") else str(retry_result)
+    if not output:
+        print("Retrying supervisor orchestrator once...", flush=True)
+        retry_completed, retry_result = _run_with_timeout(
+            supervisor.run,
+            pipeline_timeout_seconds,
+            task=user_goal,
         )
-        output = retry_output
+        if not retry_completed:
+            print(
+                f"Supervisor retry timed out after {pipeline_timeout_seconds}s; "
+                "using direct fallback pipeline.",
+                flush=True,
+            )
+        elif isinstance(retry_result, Exception):
+            print(f"Supervisor retry failed: {retry_result}", flush=True)
+        else:
+            output = str(_extract_output_text(retry_result)).strip()
+
+    # The supervisor may occasionally stop at an intermediate planning message.
+    # Fallback to a deterministic two-step execution so callers always receive
+    # the full combined response structure.
+    if not _is_complete_combined_output(output):
+        print("Running direct fallback pipeline...", flush=True)
+        fallback_completed, fallback_result = _run_with_timeout(
+            _run_direct_fallback_pipeline,
+            pipeline_timeout_seconds,
+            user_goal,
+        )
+        if not fallback_completed:
+            output = (
+                "Fallback pipeline timed out. "
+                "Increase SUPERVISOR_PIPELINE_TIMEOUT_SECONDS and try again."
+            )
+        elif isinstance(fallback_result, Exception):
+            output = f"Fallback pipeline failed: {fallback_result}"
+        else:
+            output = str(fallback_result).strip()
 
     print(output if str(output).strip() else "No output generated.")
 

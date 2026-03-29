@@ -1,37 +1,34 @@
 SECTION_EXTRACTION_PROMPT = """Persona:
 You are a Senior Software Architect specializing in
-software design documentation.
+low-level design documentation across multiple domains.
 
 Context:
-You are given a Low Level Design (LLD) document that
-describes an AI agent system. The document may contain
-sections such as agent goals, planner/executor flow,
-tool interfaces, memory strategy, state schema,
-guardrails, evaluation metrics, and deployment details.
+You are given a Low Level Design (LLD) document for an unknown subject.
+It may describe a website, backend service, mobile app, data pipeline,
+AI system, enterprise workflow, or another software/system domain.
 
 Task:
-Identify and extract the major agent-architecture
-sections from the document.
+1. Infer the document subject/domain first.
+2. Extract the most relevant architecture sections for that subject.
+3. If a section is missing, mark it as "Missing" and explain briefly.
 
 Input Document:
 {document}
 
 Constraints:
-- Return structured sections
-- Use bullet points
-- Keep the content concise
-- Prefer agent-specific headings where possible
+- Return concise structured sections using Markdown headings and bullets.
+- Keep wording grounded in the provided document. Do not invent facts.
+- Prefer domain-relevant headings over fixed templates.
+- Include at least these baseline sections when possible:
+	Objective, Scope, Components, Data/State, Interfaces, Workflows,
+	Non-Functional Requirements, Risks/Gaps.
 
-Example Output:
+Output Format:
+Subject: <inferred subject>
 
-Agent Objective:
-What the agent is expected to do.
-
-Core Workflow:
-Input Parser -> Planner -> Tool Executor -> Response Composer
-
-Tooling and Memory:
-Tool Registry, Retrieval Store, Session Memory
+## Extracted Sections
+### <Section Name>
+- ...
 """
 
 ARCHITECTURE_ANALYSIS_PROMPT = """Persona:
@@ -39,52 +36,49 @@ You are a Principal Software Architect performing
 a technical design review.
 
 Context:
-The following sections were extracted from a Low
-Level Design document of an AI agent system.
+The following sections were extracted from an LLD document.
+The subject may be any software/system domain.
 
 Task:
-Analyze the architecture and evaluate:
+Analyze architectural quality using a domain-adaptive checklist:
 
-1. Agent workflow design (planner, executor, reflection)
-2. State and memory design (short/long term, persistence)
-3. Tooling contracts (input/output schema, retries, timeout)
-4. Safety and guardrails (prompt injection, policy checks)
-5. Evaluation and observability (metrics, tracing, tests)
+1. Requirement clarity and scope boundaries
+2. Component design and responsibility separation
+3. Interfaces/contracts (APIs, schemas, integration boundaries)
+4. Data/state management and lifecycle
+5. Error handling, resilience, and failure recovery
+6. Security, compliance, and safety considerations
+7. Performance, scalability, and cost implications
+8. Observability and testability
+9. Deployment and operations readiness
 
 Input Sections:
 {sections}
 
 Constraints:
-- Focus on architectural quality
-- Identify strengths and weaknesses
-- Provide technical reasoning
-- Explicitly call out missing agent-critical elements
-
-Example:
-
-Workflow Analysis:
-The planner and executor are separated, which improves
-maintainability and makes retries safer.
+- Focus on technical quality and implementation readiness.
+- Identify strengths, weaknesses, and trade-offs.
+- If domain-specific dimensions are relevant, include them explicitly.
+- Clearly call out missing critical details that block implementation.
 """
 
 REPORT_GENERATION_PROMPT = """Persona:
 You are a Senior Software Architecture Reviewer.
 
 Context:
-An architecture analysis of a Low Level Design
-document has been completed.
+An architecture analysis of an LLD document has been completed.
+The LLD subject may belong to any software/system domain.
 
 Task:
-Generate a structured LLD Review Report for an
-AI agent design.
+Generate a clear, actionable LLD review report.
 
 Input Analysis:
 {analysis}
 
 Constraints:
-- Output must be in Markdown
-- Use clear headings
-- Provide actionable improvement suggestions
+- Output must be in Markdown.
+- Keep it specific, practical, and implementation-oriented.
+- Avoid domain assumptions unless evidence exists in input analysis.
 
 Output Structure:
 
@@ -92,23 +86,17 @@ Output Structure:
 
 ## Document Overview
 
-## Agent Workflow Analysis
+## Strengths
 
-## State and Memory Design Review
+## Gaps and Risks
 
-## Tooling and Integration Review
+## Architectural Assessment
 
-## Safety and Guardrails Review
-
-## Evaluation, Testing, and Observability
-
-## Missing Elements
+## Missing or Ambiguous Details
 
 ## Improvement Recommendations
 
-Example:
+## Prioritized Next Steps
 
-## Tooling and Integration Review
-Tool schemas are defined, but retry policy and timeout
-budgets are missing.
+## Clarifying Questions
 """

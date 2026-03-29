@@ -52,7 +52,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -792,15 +792,32 @@ def _call_worker(spec: WorkerSpec, task: str) -> str:
 
 
 def _extract_text(messages: List[BaseMessage]) -> str:
-    """Return the text content of the last message in a message list."""
+    """Return the latest non-empty text content from a message list."""
     if not messages:
         return ""
-    last = messages[-1]
-    if isinstance(last.content, str):
-        return last.content
-    if isinstance(last.content, list):
-        return "".join(
-            c.get("text", "") if isinstance(c, dict) else str(c)
-            for c in last.content
-        )
-    return str(last.content)
+
+    def _content_to_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            text = "".join(
+                c.get("text", "") if isinstance(c, dict) else str(c)
+                for c in content
+            )
+            return text.strip()
+        return str(content).strip()
+
+    # Prefer the most recent assistant response text, not tool payload text.
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            text = _content_to_text(message.content)
+            if text:
+                return text
+
+    # Fallback for provider traces where assistant text was not typed as AIMessage.
+    for message in reversed(messages):
+        text = _content_to_text(message.content)
+        if text:
+            return text
+
+    return ""

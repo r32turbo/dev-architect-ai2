@@ -35,7 +35,7 @@ from typing import Any, List, Optional, Sequence, Type
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -351,20 +351,33 @@ class ReusableReActAgent:
 
     @staticmethod
     def _extract_text(messages: List[BaseMessage]) -> str:
-        """Return the text content of the last message in the list."""
+        """Return the latest non-empty text, preferring assistant messages."""
         if not messages:
             return ""
-        last = messages[-1]
-        if isinstance(last.content, str):
-            return last.content
-        # Handle list-of-dicts content (e.g. tool-call responses).
-        if isinstance(last.content, list):
-            parts = [
-                c.get("text", "") if isinstance(c, dict) else str(c)
-                for c in last.content
-            ]
-            return "".join(parts)
-        return str(last.content)
+
+        def _content_to_text(content: Any) -> str:
+            if isinstance(content, str):
+                return content.strip()
+            if isinstance(content, list):
+                parts = [
+                    c.get("text", "") if isinstance(c, dict) else str(c)
+                    for c in content
+                ]
+                return "".join(parts).strip()
+            return str(content).strip()
+
+        for message in reversed(messages):
+            if isinstance(message, AIMessage):
+                text = _content_to_text(message.content)
+                if text:
+                    return text
+
+        for message in reversed(messages):
+            text = _content_to_text(message.content)
+            if text:
+                return text
+
+        return ""
 
     def _invoke_agent_with_feedback(
         self,

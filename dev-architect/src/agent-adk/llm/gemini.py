@@ -47,6 +47,7 @@ def create_agent_llm(config: GeminiConfig | None = None) -> ChatVertexAI:
         location=cfg.location,
         temperature=cfg.agent_temperature,
         max_output_tokens=cfg.max_output_tokens,
+        timeout=cfg.timeout_seconds,
     )
 
 
@@ -75,4 +76,5 @@ def create_validator_llm(config: GeminiConfig | None = None) -> ChatVertexAI:
         location=cfg.location,
         temperature=cfg.validator_temperature,
         max_output_tokens=cfg.max_output_tokens,
+        timeout=cfg.timeout_seconds,
     )
