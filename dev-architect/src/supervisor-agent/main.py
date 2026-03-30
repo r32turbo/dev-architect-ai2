@@ -39,7 +39,7 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 SYSTEM_ANALYST_DIR = SRC_DIR / "system-analyst-agent"
 LLD_DIR = SRC_DIR / "low-level-design-agent"
 SYSTEM_ANALYST_MAIN_PATH = SYSTEM_ANALYST_DIR / "main.py"
-LLD_APP_PATH = LLD_DIR / "app.py"
+LLD_APP_PATH = LLD_DIR / "lld_createagent.py"
 
 
 def _load_environment() -> None:

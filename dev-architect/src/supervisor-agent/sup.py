@@ -68,7 +68,8 @@ def _ensure_reusableagents_package() -> None:
 
 def _resolve_lld_app_path() -> Path:
     """Resolve LLD app path, verifying all required files exist."""
-    required_files = ["app.py", "prompts.py", "state.py"]
+    required_files = ["prompts.py", "state.py"]
+    entrypoint_names = ["lld_createagent.py", "app.py"]
 
     env_path = os.getenv("LLD_APP_PATH")
     if env_path:
@@ -77,11 +78,13 @@ def _resolve_lld_app_path() -> Path:
             candidate = (Path.cwd() / candidate).resolve()
         if candidate.is_file():
             parent_dir = candidate.parent
+            entrypoint_ok = candidate.name in entrypoint_names
             all_exist = all((parent_dir / f).is_file() for f in required_files)
-            if all_exist:
+            if entrypoint_ok and all_exist:
                 return candidate
 
     candidates = [
+        SRC_DIR / "low-level-design-agent" / "lld_createagent.py",
         SRC_DIR / "low-level-design-agent" / "app.py",
         SRC_DIR / "fb-lld-creatingagent" / "app.py",
     ]
@@ -93,8 +96,8 @@ def _resolve_lld_app_path() -> Path:
                 return candidate
 
     raise FileNotFoundError(
-        f"Could not find complete LLD app (needs {', '.join(required_files)}). "
-        "Set LLD_APP_PATH to the app.py path of your complete low-level-design-agent, "
+        f"Could not find complete LLD app (needs entrypoint in {entrypoint_names} and {', '.join(required_files)}). "
+        "Set LLD_APP_PATH to your complete low-level-design-agent entrypoint path, "
         "or the missing files will be loaded from the fb-lld-creatingagent branch."
     )
 
@@ -104,7 +107,7 @@ def _resolve_lld_app_path() -> Path:
 
 def _materialize_lld_app_from_branch(branch_name: str) -> Path:
     rel_files = {
-        "app.py": "dev-architect/src/low-level-design-agent/app.py",
+        "lld_createagent.py": "dev-architect/src/low-level-design-agent/lld_createagent.py",
         "prompts.py": "dev-architect/src/low-level-design-agent/prompts.py",
         "state.py": "dev-architect/src/low-level-design-agent/state.py",
     }
@@ -112,14 +115,25 @@ def _materialize_lld_app_from_branch(branch_name: str) -> Path:
     temp_dir = Path(tempfile.mkdtemp(prefix="lld_from_branch_"))
 
     for local_name, rel_path in rel_files.items():
-        completed = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "show", f"{branch_name}:{rel_path}"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(REPO_ROOT), "show", f"{branch_name}:{rel_path}"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError:
+            if local_name != "lld_createagent.py":
+                raise
+            legacy_rel_path = "dev-architect/src/low-level-design-agent/app.py"
+            completed = subprocess.run(
+                ["git", "-C", str(REPO_ROOT), "show", f"{branch_name}:{legacy_rel_path}"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
         content = completed.stdout
-        if local_name == "app.py":
+        if local_name == "lld_createagent.py":
             # Normalize import paths to avoid class identity mismatches between
             # reusableagents.* and top-level agents/prompts/config modules.
             content = content.replace("reusableagents.agents.react_agent", "agents.react_agent")
@@ -129,7 +143,7 @@ def _materialize_lld_app_from_branch(branch_name: str) -> Path:
             content = content.replace("enable_validation=True", "enable_validation=False")
         (temp_dir / local_name).write_text(content, encoding="utf-8")
 
-    return temp_dir / "app.py"
+    return temp_dir / "lld_createagent.py"
 
 
 def _load_environment() -> None:

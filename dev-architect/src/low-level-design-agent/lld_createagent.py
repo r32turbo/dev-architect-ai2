@@ -51,7 +51,7 @@ try:
         SECTION_EXTRACTION_PROMPT,
     )
 except ImportError:
-    # Fallback for direct script execution (python app.py).
+    # Fallback for direct script execution (python lld_createagent.py).
     current_dir = Path(__file__).resolve().parent
     prompts_spec = importlib.util.spec_from_file_location(
         "low_level_design_prompts", current_dir / "prompts.py"
