@@ -3,11 +3,8 @@ import sys
 import importlib
 import warnings
 from pathlib import Path
-from typing import TypedDict
 
 from dotenv import load_dotenv
-from langgraph.graph import StateGraph, START, END
-from langchain_google_vertexai import ChatVertexAI
 
 from prompt import SYSTEM_ANALYST_PROMPT
 
@@ -33,11 +30,15 @@ def load_adk_components():
     prompts_mod = importlib.import_module("prompts.base")
     config_mod = importlib.import_module("config.settings")
     validator_mod = importlib.import_module("agents.validator")
+    llm_mod = importlib.import_module("llm.gemini")
     return (
         react_mod.ReusableReActAgent,
         prompts_mod.PromptBuilder,
         config_mod.AgentConfig,
         validator_mod.OutputValidator,
+        config_mod.GeminiConfig,
+        llm_mod.create_agent_llm,
+        llm_mod.create_validator_llm,
     )
 
 
@@ -58,6 +59,24 @@ def normalize_text(text: str) -> str:
     return "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in text.lower())
 
 
+def deduplicate_output(text: str) -> str:
+    """Remove repeated markdown chunks while preserving order and spacing."""
+    if not text.strip():
+        return text
+
+    chunks = [chunk.strip() for chunk in text.split("\n\n") if chunk.strip()]
+    seen = set()
+    unique_chunks = []
+
+    for chunk in chunks:
+        normalized_chunk = " ".join(normalize_text(chunk).split())
+        if normalized_chunk and normalized_chunk not in seen:
+            seen.add(normalized_chunk)
+            unique_chunks.append(chunk)
+
+    return "\n\n".join(unique_chunks).strip()
+
+
 # ---------------- ENV ----------------
 def load_environment():
     for path in [Path.cwd(), *Path.cwd().parents]:
@@ -67,23 +86,29 @@ def load_environment():
             break
 
 
-# ---------------- LLM ----------------
-def create_llm(model: str):
-    return ChatVertexAI(
-        model_name=model,
-        project=os.getenv("GOOGLE_CLOUD_PROJECT", "eds-alchemy"),
-        location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
-        temperature=0.0,
-        max_output_tokens=8192,
-    )
-
-
 # ---------------- AGENT SETUP ----------------
 def build_agent():
-    ReusableReActAgent, PromptBuilder, AgentConfig, OutputValidator = load_adk_components()
+    (
+        ReusableReActAgent,
+        PromptBuilder,
+        AgentConfig,
+        OutputValidator,
+        GeminiConfig,
+        create_agent_llm,
+        create_validator_llm,
+    ) = load_adk_components()
 
-    llm = create_llm(os.getenv("GEMINI_AGENT_MODEL", "gemini-2.5-flash-lite"))
-    validator_llm = create_llm(os.getenv("GEMINI_VALIDATOR_MODEL", "gemini-2.5-flash-lite"))
+    gemini_config = GeminiConfig(
+        project_id=os.getenv("GOOGLE_CLOUD_PROJECT", "eds-alchemy"),
+        location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+        agent_model=os.getenv("GEMINI_AGENT_MODEL", "gemini-2.5-flash-lite"),       # Primary ReAct agent model
+        validator_model=os.getenv("GEMINI_VALIDATOR_MODEL", "gemini-2.5-flash-lite"),   # Separate validator model (can differ)
+        agent_temperature=0.0,
+        validator_temperature=0.0,
+    )
+
+    agent_llm = create_agent_llm(gemini_config)
+    validator_llm = create_validator_llm(gemini_config)
 
     validator = OutputValidator(llm=validator_llm)
 
@@ -95,7 +120,7 @@ def build_agent():
 
     return ReusableReActAgent(
         tools=[],
-        llm=llm,
+        llm=agent_llm,
         prompt_builder=prompt_builder,
         validator=validator,
         config=AgentConfig(
@@ -106,40 +131,15 @@ def build_agent():
     )
 
 
-# ---------------- STATE ----------------
-class AgentState(TypedDict):
-    user_goal: str
-    output: str
-
-
-# ---------------- NODE ----------------
-def analyst_node(state: AgentState):
-    result = agent.run(user_goal=state["user_goal"])
-    return {"output": result.output}
-
-
-# ---------------- GRAPH ----------------
-def build_graph():
-    graph = StateGraph(AgentState)
-    graph.add_node("analyst", analyst_node)
-    graph.add_edge(START, "analyst")
-    graph.add_edge("analyst", END)
-    return graph.compile()
-
-
 # ---------------- MAIN ----------------
 def main():
     load_environment()
-
-    global agent
     agent = build_agent()
-
-    app = build_graph()
 
     user_goal = "Create a one page marketing website using NextJS ."
 
-    result = app.invoke({"user_goal": user_goal})
-    output = result.get("output", "").strip()
+    result = agent.run(user_goal=user_goal)
+    output = (result.output or "").strip()
 
     # Keep structure simple, with at most one follow-up pass if output looks incomplete.
     if output:
@@ -166,6 +166,8 @@ def main():
                     output = follow_up_text
                 elif follow_up_text not in output and "no sections are missing" not in follow_up_text.lower():
                     output = f"{output}\n\n{follow_up_text}"
+
+    output = deduplicate_output(output)
 
     if output:
         print(output)

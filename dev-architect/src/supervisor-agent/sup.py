@@ -7,6 +7,7 @@ import tempfile
 import threading
 import textwrap
 import types
+import warnings
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -18,11 +19,40 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ADK_ROOT = SRC_DIR / "agent-adk"
 SYSTEM_ANALYST_DIR = SRC_DIR / "system-analyst-agent"
-SYSTEM_ANALYST_MAIN_PATH = SYSTEM_ANALYST_DIR / "main.py"
 SYSTEM_ANALYST_PROMPT_PATH = SYSTEM_ANALYST_DIR / "prompt.py"
+
+# Hide known ChatVertexAI deprecation warnings from terminal output.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*ChatVertexAI.*deprecated.*",
+    category=DeprecationWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r".*Use \[`ChatGoogleGenerativeAI`\].*",
+    category=DeprecationWarning,
+)
+try:
+    from langchain_core._api.deprecation import LangChainDeprecationWarning
+
+    warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
+except Exception:
+    pass
 
 if str(ADK_ROOT) not in sys.path:
     sys.path.insert(0, str(ADK_ROOT))
+
+
+def _resolve_system_analyst_entry_path() -> Path:
+    preferred = SYSTEM_ANALYST_DIR / "analyst_agent.py"
+    legacy = SYSTEM_ANALYST_DIR / "main.py"
+    if preferred.is_file():
+        return preferred
+    if legacy.is_file():
+        return legacy
+    raise FileNotFoundError(
+        f"System analyst entry file not found. Expected one of: {preferred}, {legacy}"
+    )
 
 
 def _ensure_reusableagents_package() -> None:
@@ -159,7 +189,9 @@ class SystemAnalystWorker:
             prompt_module = _load_module("system_analyst_prompt", SYSTEM_ANALYST_PROMPT_PATH)
             sys.modules["prompt"] = prompt_module
 
-            analyst_module = _load_module("system_analyst_main", SYSTEM_ANALYST_MAIN_PATH)
+            analyst_module = _load_module(
+                "system_analyst_main", _resolve_system_analyst_entry_path()
+            )
             if hasattr(analyst_module, "load_environment"):
                 analyst_module.load_environment()
             self._agent = analyst_module.build_agent()
@@ -257,10 +289,12 @@ class LLDWorker:
                 sys.modules[spec.name] = module
                 spec.loader.exec_module(module)
 
-                if not hasattr(module, "graph"):
-                    raise RuntimeError("LLD module does not expose graph")
-
-                result = module.graph.invoke({"lld_input": lld_input})
+                if hasattr(module, "graph"):
+                    result = module.graph.invoke({"lld_input": lld_input})
+                elif hasattr(module, "run_pipeline"):
+                    result = module.run_pipeline(lld_input)
+                else:
+                    raise RuntimeError("LLD module does not expose graph or run_pipeline")
                 print(
                     json.dumps(
                         {

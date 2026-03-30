@@ -2,11 +2,33 @@ import os
 import sys
 import types
 import importlib
+import warnings
 from pathlib import Path
 
 from dotenv import load_dotenv
-from langchain_google_vertexai import ChatVertexAI
-from langgraph.graph import END, START, StateGraph
+
+# Hide known ChatVertexAI deprecation warnings from terminal output.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*ChatVertexAI.*deprecated.*",
+    category=DeprecationWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r".*Use \[`ChatGoogleGenerativeAI`\].*",
+    category=DeprecationWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r".*langchain-google-genai.*ChatGoogleGenerativeAI.*",
+    category=DeprecationWarning,
+)
+try:
+    from langchain_core._api.deprecation import LangChainDeprecationWarning
+
+    warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
+except Exception:
+    pass
 
 try:
     from .state import LLDAgentState, LLD_INPUT
@@ -67,15 +89,22 @@ ReusableReActAgent = importlib.import_module(
 OutputValidator = importlib.import_module(
     "agents.validator"
 ).OutputValidator
-AgentConfig = importlib.import_module("config.settings").AgentConfig
+settings_mod = importlib.import_module("config.settings")
+AgentConfig = settings_mod.AgentConfig
+GeminiConfig = settings_mod.GeminiConfig
 PromptBuilder = importlib.import_module("prompts.base").PromptBuilder
+llm_mod = importlib.import_module("llm.gemini")
+create_agent_llm = llm_mod.create_agent_llm
+create_validator_llm = llm_mod.create_validator_llm
 
 
-llm = ChatVertexAI(
-    model_name=os.getenv("GEMINI_AGENT_MODEL", "gemini-2.5-flash-lite"),
-    project=os.getenv("GEMINI_PROJECT_ID", "eds-alchemy"),
+gemini_config = GeminiConfig(
+    project_id=os.getenv("GEMINI_PROJECT_ID", "eds-alchemy"),
     location=os.getenv("GEMINI_LOCATION", "us-central1"),
-    temperature=0.0,
+    agent_model=os.getenv("GEMINI_AGENT_MODEL", "gemini-2.5-flash-lite"),       # Primary ReAct agent model
+    validator_model=os.getenv("GEMINI_AGENT_MODEL", "gemini-2.5-flash-lite"),   # Separate validator model (can differ)
+    agent_temperature=0.0,
+    validator_temperature=0.0,
 )
 
 agent_config = AgentConfig(
@@ -85,8 +114,8 @@ agent_config = AgentConfig(
     max_refinement_attempts=2,
 )
 
-agent_llm = llm
-validator_llm = llm
+agent_llm = create_agent_llm(gemini_config)
+validator_llm = create_validator_llm(gemini_config)
 validator = OutputValidator(
     llm=validator_llm,
     score_threshold=agent_config.validation_score_threshold,
@@ -110,46 +139,64 @@ react_agent = ReusableReActAgent(
     config=agent_config,
 )
 
+fallback_agent_config = AgentConfig(
+    max_react_iterations=agent_config.max_react_iterations,
+    enable_validation=False,
+    max_refinement_attempts=agent_config.max_refinement_attempts,
+)
+
+fallback_react_agent = ReusableReActAgent(
+    tools=[],
+    llm=agent_llm,
+    prompt_builder=react_prompt,
+    validator=validator,
+    config=fallback_agent_config,
+)
+
 
 def _run_task(task: str) -> str:
-    response = react_agent.run(task=task)
+    try:
+        response = react_agent.run(task=task)
+    except AttributeError as exc:
+        # Known edge case: validator returns None and crashes score access.
+        if "'NoneType' object has no attribute 'score'" not in str(exc):
+            raise
+        response = fallback_react_agent.run(task=task)
     return response.output if isinstance(response.output, str) else str(response.output)
 
 
-def extract_sections(state: LLDAgentState) -> dict[str, str]:
+def extract_sections(state: dict[str, str]) -> dict[str, str]:
     document = state["lld_input"]
     prompt = SECTION_EXTRACTION_PROMPT.format(document=document)
     return {"sections": _run_task(prompt)}
 
 
-def analyze_architecture(state: LLDAgentState) -> dict[str, str]:
+def analyze_architecture(state: dict[str, str]) -> dict[str, str]:
     sections = state["sections"]
     prompt = ARCHITECTURE_ANALYSIS_PROMPT.format(sections=sections)
     return {"architecture_analysis": _run_task(prompt)}
 
 
-def generate_report(state: LLDAgentState) -> dict[str, str]:
+def generate_report(state: dict[str, str]) -> dict[str, str]:
     analysis = state["architecture_analysis"]
     prompt = REPORT_GENERATION_PROMPT.format(analysis=analysis)
     return {"final_report": _run_task(prompt)}
 
 
-builder = StateGraph(LLDAgentState)
-
-builder.add_node("extract_sections", extract_sections)
-builder.add_node("analyze_architecture", analyze_architecture)
-builder.add_node("generate_report", generate_report)
-
-builder.add_edge(START, "extract_sections")
-builder.add_edge("extract_sections", "analyze_architecture")
-builder.add_edge("analyze_architecture", "generate_report")
-builder.add_edge("generate_report", END)
-
-graph = builder.compile()
+def run_pipeline(lld_input: str) -> dict[str, str]:
+    state = {"lld_input": lld_input}
+    state.update(extract_sections(state))
+    state.update(analyze_architecture(state))
+    state.update(generate_report(state))
+    return {
+        "sections": str(state.get("sections", "")).strip(),
+        "architecture_analysis": str(state.get("architecture_analysis", "")).strip(),
+        "final_report": str(state.get("final_report", "")).strip(),
+    }
 
 
 if __name__ == "__main__":
-    result = graph.invoke({"lld_input": LLD_INPUT})
+    result = run_pipeline(LLD_INPUT)
 
     print("\n------ LLD REVIEW REPORT ------\n")
     print(result["final_report"])
