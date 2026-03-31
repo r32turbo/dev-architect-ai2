@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -387,14 +388,115 @@ def _run_with_timeout(func: Any, timeout_seconds: int, *args: Any, **kwargs: Any
 
 def _is_complete_combined_output(text: str) -> bool:
     required_sections = [
-        "## User Goal",
-        "## System Analyst Output",
-        "## LLD Sections",
-        "## LLD Architecture Analysis",
-        "## LLD Final Report",
+        "User Goal",
+        "System Analyst Output",
+        "LLD Sections",
+        "LLD Architecture Analysis",
+        "LLD Final Report",
     ]
-    normalized = str(text or "")
-    return all(section in normalized for section in required_sections)
+    parsed = _extract_markdown_sections(str(text or ""))
+    return all(section in parsed for section in required_sections)
+
+
+def _normalize_section_title(title: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9 ]+", " ", str(title or "").lower())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    aliases = {
+        "user goal": "User Goal",
+        "system analyst output": "System Analyst Output",
+        "system analysis output": "System Analyst Output",
+        "lld sections": "LLD Sections",
+        "sections": "LLD Sections",
+        "lld architecture analysis": "LLD Architecture Analysis",
+        "architecture analysis": "LLD Architecture Analysis",
+        "lld final report": "LLD Final Report",
+        "final report": "LLD Final Report",
+    }
+    return aliases.get(cleaned, "")
+
+
+def _extract_markdown_sections(text: str) -> dict[str, str]:
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    heading_re = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$")
+
+    for line in str(text or "").splitlines():
+        match = heading_re.match(line)
+        if match:
+            normalized_title = _normalize_section_title(match.group(1))
+            if normalized_title:
+                current = normalized_title
+                sections.setdefault(current, [])
+                continue
+            current = None
+            continue
+
+        if current is not None:
+            sections[current].append(line)
+
+    return {name: "\n".join(lines).strip() for name, lines in sections.items()}
+
+
+def _normalize_orchestrator_output(text: str, user_goal: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+
+    parsed = _extract_markdown_sections(raw)
+    if not parsed:
+        return raw
+
+    recognized_sections = [
+        "User Goal",
+        "System Analyst Output",
+        "LLD Sections",
+        "LLD Architecture Analysis",
+        "LLD Final Report",
+    ]
+    recognized_count = sum(1 for name in recognized_sections if name in parsed)
+    if recognized_count < 2:
+        return raw
+
+    return _render_combined_output(
+        user_goal=parsed.get("User Goal", "").strip() or str(user_goal).strip(),
+        system_analyst_output=parsed.get("System Analyst Output", "").strip(),
+        lld_sections=parsed.get("LLD Sections", "").strip(),
+        lld_architecture_analysis=parsed.get("LLD Architecture Analysis", "").strip(),
+        lld_final_report=parsed.get("LLD Final Report", "").strip(),
+    )
+
+
+def _coerce_partial_orchestrator_output(text: str, user_goal: str) -> str:
+    """Coerce partial orchestrator markdown into canonical combined output."""
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+
+    normalized = _normalize_orchestrator_output(raw, user_goal)
+    if _is_complete_combined_output(normalized):
+        return normalized
+
+    parsed = _extract_markdown_sections(raw)
+    if not parsed:
+        return raw
+
+    user_goal_text = parsed.get("User Goal", "").strip() or str(user_goal).strip()
+    system_text = parsed.get("System Analyst Output", "").strip()
+    lld_sections = parsed.get("LLD Sections", "").strip()
+    lld_arch = parsed.get("LLD Architecture Analysis", "").strip()
+    lld_final = parsed.get("LLD Final Report", "").strip()
+
+    # If only one LLD section appears, preserve it as final report fallback.
+    if not lld_final and (lld_sections or lld_arch):
+        lld_final = lld_arch or lld_sections
+
+    return _render_combined_output(
+        user_goal=user_goal_text,
+        system_analyst_output=system_text,
+        lld_sections=lld_sections,
+        lld_architecture_analysis=lld_arch,
+        lld_final_report=lld_final,
+    )
 
 
 def _render_combined_output(
@@ -554,6 +656,9 @@ def main() -> None:
         print(f"Supervisor orchestrator failed: {run_result}", flush=True)
     elif run_result is not None:
         output = str(_extract_output_text(run_result)).strip()
+    output = _normalize_orchestrator_output(output, user_goal)
+    if output and not _is_complete_combined_output(output):
+        output = _coerce_partial_orchestrator_output(output, user_goal)
 
     # Some model/tooling paths occasionally return an empty output payload.
     # Retry once before surfacing a no-output message.
@@ -574,6 +679,9 @@ def main() -> None:
             print(f"Supervisor retry failed: {retry_result}", flush=True)
         else:
             output = str(_extract_output_text(retry_result)).strip()
+        output = _normalize_orchestrator_output(output, user_goal)
+        if output and not _is_complete_combined_output(output):
+            output = _coerce_partial_orchestrator_output(output, user_goal)
 
     # The supervisor may occasionally stop at an intermediate planning message.
     # Fallback to a deterministic two-step execution so callers always receive
