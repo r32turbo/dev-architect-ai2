@@ -285,21 +285,39 @@ class ReusableReActAgent:
             If the agent exceeds ``max_react_iterations`` without reaching a
             final answer.  Catch this to handle runaway loops gracefully.
         """
-        system_prompt = self.prompt_builder.render_system(**prompt_variables)
-        user_message = self.prompt_builder.render_user(**prompt_variables)
-
-        output, messages = self._invoke_agent(system_prompt, user_message)
-
-        if self.validator and self.config.enable_validation:
-            response = self._validate_and_refine(
-                system_prompt=system_prompt,
-                original_input=user_message,
-                agent_output=output,
-                raw_messages=messages,
-                prompt_variables=prompt_variables,
+        context = _coerce_shared_context(prompt_variables.get("context"))
+        rendered_variables = dict(prompt_variables)
+        if context is not None:
+            rendered_variables["context"] = context.state
+            context.record(
+                agent_name="react_agent",
+                event="started",
             )
-        else:
-            response = AgentResponse(output=output, raw_messages=messages)
+
+        try:
+            system_prompt = self.prompt_builder.render_system(**rendered_variables)
+            user_message = self.prompt_builder.render_user(**rendered_variables)
+
+            output, messages = self._invoke_agent(system_prompt, user_message)
+
+            if self.validator and self.config.enable_validation:
+                response = self._validate_and_refine(
+                    system_prompt=system_prompt,
+                    original_input=user_message,
+                    agent_output=output,
+                    raw_messages=messages,
+                    prompt_variables=rendered_variables,
+                )
+            else:
+                response = AgentResponse(output=output, raw_messages=messages)
+
+            if context is not None:
+                context.set_state("react_agent.last_output", response.output)
+                context.record(agent_name="react_agent", event="completed")
+        except Exception as exc:
+            if context is not None:
+                context.record(agent_name="react_agent", event="error", detail=str(exc))
+            raise
 
         if self.output_schema is not None:
             text = response.output if isinstance(response.output, str) else str(response.output)
@@ -545,3 +563,16 @@ class ReusableReActAgent:
             refinement_attempts=attempts,
             raw_messages=current_messages,
         )
+
+
+def _coerce_shared_context(value: Any) -> Any:
+    """Return a context-like object only when it exposes the required API."""
+    if value is None:
+        return None
+    has_record = callable(getattr(value, "record", None))
+    has_set_state = callable(getattr(value, "set_state", None))
+    has_state_attr = hasattr(value, "state")
+    if has_record and has_set_state and has_state_attr:
+        return value
+    logger.warning("Ignoring non-context value passed as 'context': %s", type(value).__name__)
+    return None

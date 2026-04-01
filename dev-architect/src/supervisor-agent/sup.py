@@ -199,7 +199,13 @@ class SystemAnalystWorker:
         self._agent_response_type = agent_response_type
         self._agent = None
 
-    def run(self, task: str):
+    def run(self, task: str, context: Any = None):
+        if context is not None and callable(getattr(context, "record", None)):
+            context.record(
+                agent_name="system_analyst_worker",
+                event="started",
+                detail=str(task)[:160],
+            )
         if self._agent is None:
             prompt_module = _load_module("system_analyst_prompt", SYSTEM_ANALYST_PROMPT_PATH)
             sys.modules["prompt"] = prompt_module
@@ -211,8 +217,14 @@ class SystemAnalystWorker:
                 analyst_module.load_environment()
             self._agent = analyst_module.build_agent()
 
-        result = self._agent.run(user_goal=task)
+        run_kwargs = {"user_goal": task}
+        if context is not None:
+            run_kwargs["context"] = context
+        result = self._agent.run(**run_kwargs)
         output = result.output if hasattr(result, "output") else str(result)
+        if context is not None and callable(getattr(context, "set_state", None)):
+            context.set_state("system_analyst.output", str(output).strip())
+            context.record(agent_name="system_analyst_worker", event="completed")
         return self._agent_response_type(output=str(output).strip())
 
 
@@ -220,7 +232,13 @@ class LLDWorker:
     def __init__(self, agent_response_type: Any) -> None:
         self._agent_response_type = agent_response_type
 
-    def run(self, task: str):
+    def run(self, task: str, context: Any = None):
+        if context is not None and callable(getattr(context, "record", None)):
+            context.record(
+                agent_name="lld_worker",
+                event="started",
+                detail=str(task)[:160],
+            )
         try:
             # Prefer local LLD app so local prompt/code edits are applied.
             # Set LLD_FORCE_BRANCH=1 to always load branch materialization.
@@ -358,7 +376,11 @@ class LLDWorker:
                 "final_report": f"LLD execution failed: {exc}",
             }
 
-        return self._agent_response_type(output=json.dumps(payload, ensure_ascii=True))
+        output = json.dumps(payload, ensure_ascii=True)
+        if context is not None and callable(getattr(context, "set_state", None)):
+            context.set_state("lld.output", output)
+            context.record(agent_name="lld_worker", event="completed")
+        return self._agent_response_type(output=output)
 
 
 def _extract_output_text(result: Any) -> str:
@@ -520,7 +542,7 @@ def _render_combined_output(
     ).strip()
 
 
-def _run_direct_fallback_pipeline(user_goal: str) -> str:
+def _run_direct_fallback_pipeline(user_goal: str, context: Any = None) -> str:
     (
         _SupervisorAgent,
         _WorkerSpec,
@@ -535,10 +557,10 @@ def _run_direct_fallback_pipeline(user_goal: str) -> str:
     system_worker = SystemAnalystWorker(AgentResponse)
     lld_worker = LLDWorker(AgentResponse)
 
-    analyst_result = system_worker.run(user_goal)
+    analyst_result = system_worker.run(user_goal, context=context)
     analyst_text = str(_extract_output_text(analyst_result)).strip()
 
-    lld_result = lld_worker.run(analyst_text)
+    lld_result = lld_worker.run(analyst_text, context=context)
     lld_raw = str(_extract_output_text(lld_result)).strip()
 
     try:
@@ -637,11 +659,19 @@ def main() -> None:
         else "Create a one page marketing website using NextJS ."
     )
 
+    shared_context = None
+    try:
+        context_mod = __import__("context", fromlist=["AgentContext"])
+        shared_context = context_mod.AgentContext(state={"user_goal": user_goal})
+    except Exception:
+        shared_context = None
+
     print("Running supervisor orchestrator...", flush=True)
     completed, run_result = _run_with_timeout(
         supervisor.run,
         pipeline_timeout_seconds,
         task=user_goal,
+        context=shared_context,
     )
     if not completed:
         print(
@@ -668,6 +698,7 @@ def main() -> None:
             supervisor.run,
             pipeline_timeout_seconds,
             task=user_goal,
+            context=shared_context,
         )
         if not retry_completed:
             print(
@@ -692,6 +723,7 @@ def main() -> None:
             _run_direct_fallback_pipeline,
             pipeline_timeout_seconds,
             user_goal,
+            context=shared_context,
         )
         if not fallback_completed:
             output = (

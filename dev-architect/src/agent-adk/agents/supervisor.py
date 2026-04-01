@@ -356,6 +356,7 @@ class SupervisorAgent:
         self.config = config or SupervisorConfig()
         self.validator = validator
         self.extra_tools = _extra_tools
+        self._active_context: Optional[Any] = None
 
         # Build a name → spec lookup for efficient access inside tool closures.
         self._worker_map: Dict[str, WorkerSpec] = {w.name: w for w in self.workers}
@@ -382,20 +383,48 @@ class SupervisorAgent:
         AgentResponse
             The final (possibly validated / refined) answer with metadata.
         """
-        system_prompt = self._build_full_system_prompt(**prompt_variables)
-        user_message = self.prompt_builder.render_user(**prompt_variables)
-
-        output, messages = self._invoke_supervisor(system_prompt, user_message)
-
-        if self.validator and self.config.enable_validation:
-            return self._validate_and_refine(
-                system_prompt=system_prompt,
-                original_input=user_message,
-                agent_output=output,
-                raw_messages=messages,
+        context = _coerce_shared_context(prompt_variables.get("context"))
+        rendered_variables = dict(prompt_variables)
+        if context is not None:
+            rendered_variables["context"] = context.state
+            context.record(
+                agent_name="supervisor",
+                event="started",
+                detail=str(prompt_variables.get("task", ""))[:160],
             )
 
-        return AgentResponse(output=output, raw_messages=messages)
+        self._active_context = context
+        try:
+            system_prompt = self._build_full_system_prompt(**rendered_variables)
+            user_message = self.prompt_builder.render_user(**rendered_variables)
+
+            output, messages = self._invoke_supervisor(system_prompt, user_message)
+
+            if self.validator and self.config.enable_validation:
+                response = self._validate_and_refine(
+                    system_prompt=system_prompt,
+                    original_input=user_message,
+                    agent_output=output,
+                    raw_messages=messages,
+                )
+            else:
+                response = AgentResponse(output=output, raw_messages=messages)
+
+            if context is not None:
+                context.set_state("supervisor.last_output", response.output)
+                context.record(agent_name="supervisor", event="completed")
+
+            return response
+        except Exception as exc:
+            if context is not None:
+                context.record(
+                    agent_name="supervisor",
+                    event="error",
+                    detail=str(exc),
+                )
+            raise
+        finally:
+            self._active_context = None
 
     def as_worker(
         self,
@@ -521,9 +550,10 @@ class SupervisorAgent:
                 _spec.name, task,
             )
             try:
-                response: AgentResponse = _spec.agent.run(
-                    **_spec.bound_variables,
-                    **{_spec.task_variable: task},
+                response: AgentResponse = _run_worker_with_optional_context(
+                    _spec,
+                    task,
+                    self._active_context,
                 )
                 score_str = (
                     f"{response.validation_score:.2f}"
@@ -590,6 +620,7 @@ class SupervisorAgent:
                         _call_worker,
                         worker_map[wt.worker_name],
                         wt.task,
+                        self._active_context,
                     ): wt.worker_name
                     for wt in tasks
                 }
@@ -772,7 +803,7 @@ class SupervisorAgent:
 # ---------------------------------------------------------------------------
 
 
-def _call_worker(spec: WorkerSpec, task: str) -> str:
+def _call_worker(spec: WorkerSpec, task: str, context: Any = None) -> str:
     """
     Invoke a worker agent and return its output string.
 
@@ -781,14 +812,51 @@ def _call_worker(spec: WorkerSpec, task: str) -> str:
     caller so that ``as_completed`` can capture and log it.
     """
     logger.info("Parallel dispatch → worker %r | task: %.150s", spec.name, task)
-    response: AgentResponse = spec.agent.run(
-        **spec.bound_variables,
-        **{spec.task_variable: task},
-    )
+    response: AgentResponse = _run_worker_with_optional_context(spec, task, context)
     _out = response.output
     if isinstance(_out, BaseModel):
         return _out.model_dump_json(indent=2)
     return _out if isinstance(_out, str) else str(_out)
+
+
+def _coerce_shared_context(value: Any) -> Any:
+    """Return a context-like object only when it exposes the required API."""
+    if value is None:
+        return None
+    has_record = callable(getattr(value, "record", None))
+    has_set_state = callable(getattr(value, "set_state", None))
+    has_state_attr = hasattr(value, "state")
+    if has_record and has_set_state and has_state_attr:
+        return value
+    logger.warning("Ignoring non-context value passed as 'context': %s", type(value).__name__)
+    return None
+
+
+def _run_worker_with_optional_context(
+    spec: WorkerSpec,
+    task: str,
+    context: Any = None,
+) -> AgentResponse:
+    """Call a worker and pass context when the worker supports it."""
+    kwargs = {
+        **spec.bound_variables,
+        **{spec.task_variable: task},
+    }
+
+    if context is None:
+        return spec.agent.run(**kwargs)
+
+    try:
+        return spec.agent.run(**kwargs, context=context)
+    except TypeError as exc:
+        msg = str(exc)
+        if "unexpected keyword argument 'context'" not in msg:
+            raise
+        logger.debug(
+            "Worker %r does not accept context kwarg; retrying without context.",
+            spec.name,
+        )
+        return spec.agent.run(**kwargs)
 
 
 def _extract_text(messages: List[BaseMessage]) -> str:
