@@ -1,72 +1,94 @@
-from datetime import datetime
-
-def get_current_date():
-    return datetime.now().strftime("%B %d, %Y")
-
-def build_prompt(template: str, **kwargs) -> str:
-    """
-    Build a prompt by formatting a template with provided arguments.
-    
-    Args:
-        template: The prompt template string
-        **kwargs: Variables to interpolate into the template
-    
-    Returns:
-        Formatted prompt string
-    """
-    return template.format(**kwargs)
-
-
-backend_lld_prompt = """
-You are a senior backend system architect.
-
-Your task is to convert a Low Level Design (LLD) document into a backend implementation design.
-
-Analyze the given LLD carefully and generate the following:
-
-1. Backend Modules
-2. Backend APIs
-3. Database Schema
-4. Backend Classes
-5. Folder Structure
-6. Technology Recommendations
-
-Guidelines:
-- Focus on backend system design.
-- Convert frontend components into backend services where applicable.
-- APIs should follow RESTful standards.
-- Database schema should include fields and relationships.
-- Folder structure should follow best backend practices.
-
-Current Date: {current_date}
-
-LLD Document:
-{lld_document}
-
-Output Format:
-
-Backend Modules:
-- list modules
-
-Backend APIs:
-- method + endpoint + purpose
-
-Database Schema:
-- table name
-- fields
-
-Backend Classes:
-- class name
-- responsibilities
-
-Folder Structure:
-backend/
- ├── controllers
- ├── services
- ├── models
- ├── routes
- └── utils
+"""
+prompts.py – Backend LLD Agent Prompt
 """
 
-# Alias for compatibility
-SYSTEM_PROMPT = backend_lld_prompt
+import importlib
+import sys
+import types
+from pathlib import Path
+
+
+# ---------- Register agent-adk ----------
+def register_agent_adk():
+    if "reusableagents" in sys.modules:
+        return
+
+    base_path = Path(__file__).resolve()
+
+    possible_paths = [
+        base_path.parents[1] / "agent-adk",
+        base_path.parents[2] / "agent-adk",
+        base_path.parents[3] / "agent-adk",
+    ]
+
+    for path in possible_paths:
+        if path.exists():
+            pkg = types.ModuleType("reusableagents")
+            pkg.__path__ = [str(path)]
+            sys.modules["reusableagents"] = pkg
+            return
+
+
+register_agent_adk()
+
+
+# ---------- PromptBuilder ----------
+PromptBuilder = importlib.import_module(
+    "reusableagents.prompts.base"
+).PromptBuilder
+
+
+# ---------- SYSTEM + USER PROMPT ----------
+BACKEND_LLD_PROMPT = (
+    PromptBuilder()
+    .add_system(
+        """
+You are a Senior Backend Engineer specialized in Low-Level Design (LLD).
+
+Your task is to convert the given Frontend/System Design into a COMPLETE Backend Low-Level Design.
+
+STRICT RULES:
+- NEVER ask for input
+- NEVER say "please provide LLD"
+- ALWAYS assume input is already provided
+- ALWAYS generate full backend design
+
+Your output MUST include:
+
+1. System Components
+2. Class Design (with attributes & methods)
+3. API Design (endpoints, request/response)
+4. Database Schema (if applicable)
+5. Data Flow / Sequence
+6. Design Patterns used
+7. Assumptions
+
+Be structured, clear, and production-ready.
+""",
+        name="system",
+    )
+    .add_user(
+        """
+Generate a detailed Backend Low-Level Design using the following input:
+
+{lld_input}
+
+---
+
+IMPORTANT:
+- Do NOT ask for input
+- Do NOT stop midway
+- Generate complete backend LLD
+""",
+        name="user",
+    )
+)
+
+ 
+
+# ---------- TASK TEMPLATE ----------
+BACKEND_LLD_TASK = """
+Generate a detailed Backend Low-Level Design using the following input:
+
+{lld_input}
+"""
