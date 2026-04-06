@@ -71,6 +71,97 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def _get_chunking_config() -> tuple[int, int]:
+    chunk_size = int(os.getenv("LLD_CHUNK_SIZE_CHARS", "12000"))
+    chunk_overlap = int(os.getenv("LLD_CHUNK_OVERLAP_CHARS", "1200"))
+    if chunk_size < 1000:
+        chunk_size = 1000
+    if chunk_overlap < 0:
+        chunk_overlap = 0
+    if chunk_overlap >= chunk_size:
+        chunk_overlap = max(0, chunk_size // 10)
+    return chunk_size, chunk_overlap
+
+
+def _chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
+    source = str(text or "")
+    if len(source) <= chunk_size:
+        return [source]
+
+    chunks: list[str] = []
+    start = 0
+    text_len = len(source)
+
+    while start < text_len:
+        end = min(start + chunk_size, text_len)
+
+        # Prefer cutting at a paragraph or line boundary to keep chunks coherent.
+        if end < text_len:
+            paragraph_break = source.rfind("\n\n", start, end)
+            line_break = source.rfind("\n", start, end)
+            break_at = paragraph_break if paragraph_break > start else line_break
+            if break_at > start:
+                end = break_at
+
+        part = source[start:end].strip()
+        if part:
+            chunks.append(part)
+
+        if end >= text_len:
+            break
+        start = max(end - chunk_overlap, start + 1)
+
+    return chunks or [source]
+
+
+def _merge_chunk_outputs(stage_name: str, outputs: list[str], context: Any = None) -> str:
+    cleaned_outputs = [str(item).strip() for item in outputs if str(item).strip()]
+    if not cleaned_outputs:
+        return ""
+    if len(cleaned_outputs) == 1:
+        return cleaned_outputs[0]
+
+    merged_source = "\n\n".join(
+        f"### {stage_name} Chunk {idx + 1}\n{item}"
+        for idx, item in enumerate(cleaned_outputs)
+    )
+    merge_prompt = (
+        f"Original user goal: {_resolve_user_goal(context=context)}\n"
+        "You MUST keep the merged output aligned with this exact goal and domain.\n\n"
+        f"You are merging outputs from multiple {stage_name} chunks. "
+        "Combine them into one coherent result, remove duplicates, keep important details, "
+        "and preserve clear markdown structure.\n\n"
+        f"Chunk outputs:\n\n{merged_source}"
+    )
+    return _run_task(merge_prompt, context=context)
+
+
+def _resolve_user_goal(context: Any = None, state: dict[str, str] | None = None) -> str:
+    if context is not None:
+        ctx_state = getattr(context, "state", None)
+        if isinstance(ctx_state, dict):
+            goal = str(ctx_state.get("user_goal", "")).strip()
+            if goal:
+                return goal
+
+    if isinstance(state, dict):
+        raw_input = str(state.get("lld_input", "")).strip()
+        if raw_input:
+            first_line = raw_input.splitlines()[0].strip()
+            return first_line[:200]
+
+    return "Unknown goal"
+
+
+def _goal_anchored_prompt(base_prompt: str, user_goal: str) -> str:
+    return (
+        f"Original user goal (must remain unchanged): {user_goal}\n"
+        "Strict instruction: Keep all outputs in the same domain as this goal. "
+        "If input text appears mixed, prioritize the content aligned with this goal and ignore unrelated domains.\n\n"
+        f"{base_prompt}"
+    )
+
+
 def _register_agent_adk_package() -> None:
     """Expose src/agent-adk as importable package name `reusableagents`."""
     if "reusableagents" in sys.modules:
@@ -177,8 +268,25 @@ def _run_task(task: str, context: Any = None) -> str:
 def extract_sections(state: dict[str, str], context: Any = None) -> dict[str, str]:
     logger.info("LLD stage: extract_sections")
     document = state["lld_input"]
-    prompt = SECTION_EXTRACTION_PROMPT.format(document=document)
-    output = _run_task(prompt, context=context)
+    user_goal = _resolve_user_goal(context=context, state=state)
+    chunk_size, chunk_overlap = _get_chunking_config()
+    doc_chunks = _chunk_text(document, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    if len(doc_chunks) > 1:
+        logger.info("LLD extract_sections chunking enabled (%d chunks)", len(doc_chunks))
+
+    chunk_outputs: list[str] = []
+    for idx, chunk in enumerate(doc_chunks):
+        prompt = _goal_anchored_prompt(
+            SECTION_EXTRACTION_PROMPT.format(document=chunk),
+            user_goal=user_goal,
+        )
+        result = _run_task(prompt, context=context)
+        chunk_outputs.append(result)
+        if context is not None and callable(getattr(context, "set_state", None)):
+            context.set_state(f"lld.sections.chunk_{idx + 1}", result)
+
+    output = _merge_chunk_outputs("section extraction", chunk_outputs, context=context)
     if context is not None and callable(getattr(context, "set_state", None)):
         context.set_state("lld.sections", output)
     return {"sections": output}
@@ -187,8 +295,25 @@ def extract_sections(state: dict[str, str], context: Any = None) -> dict[str, st
 def analyze_architecture(state: dict[str, str], context: Any = None) -> dict[str, str]:
     logger.info("LLD stage: analyze_architecture")
     sections = state["sections"]
-    prompt = ARCHITECTURE_ANALYSIS_PROMPT.format(sections=sections)
-    output = _run_task(prompt, context=context)
+    user_goal = _resolve_user_goal(context=context, state=state)
+    chunk_size, chunk_overlap = _get_chunking_config()
+    section_chunks = _chunk_text(sections, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    if len(section_chunks) > 1:
+        logger.info("LLD analyze_architecture chunking enabled (%d chunks)", len(section_chunks))
+
+    chunk_outputs: list[str] = []
+    for idx, chunk in enumerate(section_chunks):
+        prompt = _goal_anchored_prompt(
+            ARCHITECTURE_ANALYSIS_PROMPT.format(sections=chunk),
+            user_goal=user_goal,
+        )
+        result = _run_task(prompt, context=context)
+        chunk_outputs.append(result)
+        if context is not None and callable(getattr(context, "set_state", None)):
+            context.set_state(f"lld.architecture_analysis.chunk_{idx + 1}", result)
+
+    output = _merge_chunk_outputs("architecture analysis", chunk_outputs, context=context)
     if context is not None and callable(getattr(context, "set_state", None)):
         context.set_state("lld.architecture_analysis", output)
     return {"architecture_analysis": output}
@@ -197,8 +322,25 @@ def analyze_architecture(state: dict[str, str], context: Any = None) -> dict[str
 def generate_report(state: dict[str, str], context: Any = None) -> dict[str, str]:
     logger.info("LLD stage: generate_report")
     analysis = state["architecture_analysis"]
-    prompt = REPORT_GENERATION_PROMPT.format(analysis=analysis)
-    output = _run_task(prompt, context=context)
+    user_goal = _resolve_user_goal(context=context, state=state)
+    chunk_size, chunk_overlap = _get_chunking_config()
+    analysis_chunks = _chunk_text(analysis, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    if len(analysis_chunks) > 1:
+        logger.info("LLD generate_report chunking enabled (%d chunks)", len(analysis_chunks))
+
+    chunk_outputs: list[str] = []
+    for idx, chunk in enumerate(analysis_chunks):
+        prompt = _goal_anchored_prompt(
+            REPORT_GENERATION_PROMPT.format(analysis=chunk),
+            user_goal=user_goal,
+        )
+        result = _run_task(prompt, context=context)
+        chunk_outputs.append(result)
+        if context is not None and callable(getattr(context, "set_state", None)):
+            context.set_state(f"lld.final_report.chunk_{idx + 1}", result)
+
+    output = _merge_chunk_outputs("final report", chunk_outputs, context=context)
     if context is not None and callable(getattr(context, "set_state", None)):
         context.set_state("lld.final_report", output)
     return {"final_report": output}

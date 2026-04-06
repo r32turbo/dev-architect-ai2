@@ -18,5 +18,27 @@ Include in your analysis:
 11. **Data Models** - Key entities and relationships
 12. **API Specifications** - Key APIs if applicable
 
+Hard constraints:
+- Keep output strictly aligned to the given user goal; do not switch domain.
+- Do not include conversational phrases (for example: "Okay, let's", "Sure", "Here is").
+- Do not include code fences.
+- Prefer bullet points over tables.
+
+Output format (use these headings exactly):
+## System Requirements and Design Specification
+## Introduction
+## Project Goal
+## Scope
+## Functional Requirements
+## Non-Functional Requirements
+## Assumptions
+## Out of Scope
+## Acceptance Criteria
+## Risks and Mitigations
+## Architecture Overview
+## Technology Stack Recommendations
+## Data Models
+## API Specifications
+
 Format your response in clear markdown with proper headings and structured information suitable for handoff to a low-level design team.
 """

@@ -81,6 +81,29 @@ def deduplicate_output(text: str) -> str:
     return "\n\n".join(unique_chunks).strip()
 
 
+def normalize_analyst_output(text: str) -> str:
+    """Normalize analyst output into clean markdown without conversational preamble."""
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+
+    lines = raw.splitlines()
+    first_heading_idx = next(
+        (i for i, line in enumerate(lines) if line.strip().startswith("#")),
+        None,
+    )
+
+    if first_heading_idx is not None and first_heading_idx > 0:
+        raw = "\n".join(lines[first_heading_idx:]).strip()
+    elif first_heading_idx is None:
+        raw = (
+            "## System Requirements and Design Specification\n\n"
+            f"{raw}"
+        )
+
+    return raw
+
+
 # ---------------- ENV ----------------
 def load_environment():
     for path in [Path.cwd(), *Path.cwd().parents]:
@@ -152,38 +175,7 @@ def run_system_analysis(user_goal: str, context: Any = None) -> str:
         run_kwargs["context"] = context
 
     result = agent.run(**run_kwargs)
-    output = (result.output or "").strip()
-
-    # Keep structure simple, with at most one follow-up pass if output looks incomplete.
-    if output:
-        normalized_output = normalize_text(output)
-        missing_sections = [s for s in REQUIRED_SECTIONS if s not in normalized_output]
-
-        last_line = output.splitlines()[-1].strip() if output.splitlines() else ""
-        looks_truncated = output.endswith((":", "|", "-", "*", "```")) or last_line.startswith("|")
-
-        if missing_sections or looks_truncated:
-            logger.info("Initial analyst response incomplete; running follow-up pass")
-            continuation_prompt = (
-                "Provide ONLY the missing sections listed below. "
-                "Do not repeat sections already present. "
-                "Use markdown headings and bullet points only. Do not use tables.\n\n"
-                f"Missing sections: {', '.join(missing_sections) if missing_sections else 'none'}\n\n"
-                "If no sections are missing, return an empty response."
-            )
-
-            follow_up_kwargs = {"user_goal": continuation_prompt}
-            if context is not None:
-                follow_up_kwargs["context"] = context
-
-            follow_up = agent.run(**follow_up_kwargs).output
-            follow_up_text = follow_up.strip() if isinstance(follow_up, str) else str(follow_up).strip()
-
-            if follow_up_text and follow_up_text != output:
-                if output in follow_up_text and len(follow_up_text) > len(output):
-                    output = follow_up_text
-                elif follow_up_text not in output and "no sections are missing" not in follow_up_text.lower():
-                    output = f"{output}\n\n{follow_up_text}"
+    output = normalize_analyst_output(result.output if hasattr(result, "output") else result)
 
     output = deduplicate_output(output)
 

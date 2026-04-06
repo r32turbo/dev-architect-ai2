@@ -457,7 +457,7 @@ def _is_complete_combined_output(text: str) -> bool:
         "LLD Final Report",
     ]
     parsed = _extract_markdown_sections(str(text or ""))
-    return all(section in parsed for section in required_sections)
+    return all(section in parsed and bool(str(parsed.get(section, "")).strip()) for section in required_sections)
 
 
 def _normalize_section_title(title: str) -> str:
@@ -580,6 +580,126 @@ def _render_combined_output(
         "## LLD Final Report\n\n"
         f"{lld_final_report}"
     ).strip()
+
+
+def _build_output_from_context(user_goal: str, context: Any = None) -> str:
+    """Build canonical output directly from shared context state when available."""
+    state = getattr(context, "state", None)
+    if not isinstance(state, dict):
+        return ""
+
+    system_analyst_output = str(state.get("system_analyst.output", "")).strip()
+
+    lld_output = state.get("lld.output")
+    lld_seclearctions = ""
+    lld_architecture_analysis = ""
+    lld_final_report = ""
+
+    if isinstance(lld_output, dict):
+        lld_sections = str(lld_output.get("sections", "")).strip()
+        lld_architecture_analysis = str(lld_output.get("architecture_analysis", "")).strip()
+        lld_final_report = str(lld_output.get("final_report", "")).strip()
+    elif isinstance(lld_output, str):
+        try:
+            payload = json.loads(lld_output)
+        except json.JSONDecodeError:
+            payload = {"final_report": lld_output}
+        lld_sections = str(payload.get("sections", "")).strip()
+        lld_architecture_analysis = str(payload.get("architecture_analysis", "")).strip()
+        lld_final_report = str(payload.get("final_report", "")).strip()
+
+    # Accept granular state keys if consolidated payload is missing fields.
+    if not lld_sections:
+        lld_sections = str(state.get("lld.sections", "")).strip()
+    if not lld_architecture_analysis:
+        lld_architecture_analysis = str(state.get("lld.architecture_analysis", "")).strip()
+    if not lld_final_report:
+        lld_final_report = str(state.get("lld.final_report", "")).strip()
+
+    if not any([system_analyst_output, lld_sections, lld_architecture_analysis, lld_final_report]):
+        return ""
+
+    return _render_combined_output(
+        user_goal=user_goal,
+        system_analyst_output=system_analyst_output,
+        lld_sections=lld_sections,
+        lld_architecture_analysis=lld_architecture_analysis,
+        lld_final_report=lld_final_report,
+    )
+
+
+def _ensure_non_empty_combined_output(
+    text: str,
+    user_goal: str,
+    context: Any = None,
+) -> str:
+    """Normalize final output and ensure no section is blank."""
+    parsed = _extract_markdown_sections(str(text or ""))
+    state = getattr(context, "state", None)
+    state = state if isinstance(state, dict) else {}
+
+    def _pick(primary: str, *fallbacks: str) -> str:
+        for candidate in (primary, *fallbacks):
+            value = str(candidate or "").strip()
+            if value:
+                return value
+        return ""
+
+    user_goal_text = _pick(
+        parsed.get("User Goal", ""),
+        str(user_goal),
+        str(state.get("user_goal", "")),
+    )
+    system_text = _pick(
+        parsed.get("System Analyst Output", ""),
+        str(state.get("system_analyst.output", "")),
+        "System analyst output unavailable (worker returned empty content).",
+    )
+
+    lld_output = state.get("lld.output")
+    lld_dict = lld_output if isinstance(lld_output, dict) else {}
+    if not lld_dict and isinstance(lld_output, str):
+        try:
+            loaded = json.loads(lld_output)
+            lld_dict = loaded if isinstance(loaded, dict) else {}
+        except json.JSONDecodeError:
+            lld_dict = {}
+
+    lld_sections = _pick(
+        parsed.get("LLD Sections", ""),
+        str(lld_dict.get("sections", "")),
+        str(state.get("lld.sections", "")),
+        "LLD sections unavailable (worker returned partial content).",
+    )
+    lld_architecture_analysis = _pick(
+        parsed.get("LLD Architecture Analysis", ""),
+        str(lld_dict.get("architecture_analysis", "")),
+        str(state.get("lld.architecture_analysis", "")),
+    )
+    lld_final_report = _pick(
+        parsed.get("LLD Final Report", ""),
+        str(lld_dict.get("final_report", "")),
+        str(state.get("lld.final_report", "")),
+    )
+
+    if not lld_architecture_analysis:
+        lld_architecture_analysis = (
+            "LLD architecture analysis unavailable; using best available extracted sections as fallback.\n\n"
+            f"{lld_sections}"
+        )
+    if not lld_final_report:
+        lld_final_report = (
+            "LLD final report unavailable; using best available architecture analysis as fallback.\n\n"
+            f"{lld_architecture_analysis}"
+        )
+
+    return _render_combined_output(
+        user_goal=user_goal_text,
+        system_analyst_output=system_text,
+        lld_sections=lld_sections,
+        lld_architecture_analysis=lld_architecture_analysis,
+        lld_final_report=lld_final_report,
+    )
 
 
 def _run_direct_fallback_pipeline(user_goal: str, context: Any = None) -> str:
@@ -720,7 +840,7 @@ def main() -> None:
     if not completed:
         logger.warning(
             f"Supervisor orchestrator timed out after {pipeline_timeout_seconds}s; "
-            "switching to direct fallback pipeline."
+            "attempting context-based output completion."
         )
         run_result = None
 
@@ -730,8 +850,20 @@ def main() -> None:
     elif run_result is not None:
         output = str(_extract_output_text(run_result)).strip()
     output = _normalize_orchestrator_output(output, user_goal)
+    output = _ensure_non_empty_combined_output(output, user_goal=user_goal, context=shared_context)
     if output and not _is_complete_combined_output(output):
         output = _coerce_partial_orchestrator_output(output, user_goal)
+        output = _ensure_non_empty_combined_output(output, user_goal=user_goal, context=shared_context)
+    if not _is_complete_combined_output(output):
+        context_output = _build_output_from_context(user_goal=user_goal, context=shared_context)
+        context_output = _ensure_non_empty_combined_output(
+            context_output,
+            user_goal=user_goal,
+            context=shared_context,
+        )
+        if _is_complete_combined_output(context_output):
+            logger.info("Recovered complete output from shared context")
+            output = context_output
 
     # Some model/tooling paths occasionally return an empty output payload.
     # Retry once before surfacing a no-output message.
@@ -746,36 +878,41 @@ def main() -> None:
         if not retry_completed:
             logger.warning(
                 f"Supervisor retry timed out after {pipeline_timeout_seconds}s; "
-                "using direct fallback pipeline."
+                "attempting context-based output completion."
             )
         elif isinstance(retry_result, Exception):
             logger.error("Supervisor retry failed: %s", retry_result)
         else:
             output = str(_extract_output_text(retry_result)).strip()
         output = _normalize_orchestrator_output(output, user_goal)
+        output = _ensure_non_empty_combined_output(output, user_goal=user_goal, context=shared_context)
         if output and not _is_complete_combined_output(output):
             output = _coerce_partial_orchestrator_output(output, user_goal)
+            output = _ensure_non_empty_combined_output(output, user_goal=user_goal, context=shared_context)
+        if not _is_complete_combined_output(output):
+            context_output = _build_output_from_context(user_goal=user_goal, context=shared_context)
+            context_output = _ensure_non_empty_combined_output(
+                context_output,
+                user_goal=user_goal,
+                context=shared_context,
+            )
+            if _is_complete_combined_output(context_output):
+                logger.info("Recovered complete output from shared context after retry")
+                output = context_output
 
-    # The supervisor may occasionally stop at an intermediate planning message.
-    # Fallback to a deterministic two-step execution so callers always receive
-    # the full combined response structure.
+    # If model output is still incomplete, render whatever is available in context
+    # rather than launching a separate fallback pipeline.
     if not _is_complete_combined_output(output):
-        logger.info("Running direct fallback pipeline")
-        fallback_completed, fallback_result = _run_with_timeout(
-            _run_direct_fallback_pipeline,
-            pipeline_timeout_seconds,
-            user_goal,
+        context_output = _build_output_from_context(user_goal=user_goal, context=shared_context)
+        context_output = _ensure_non_empty_combined_output(
+            context_output,
+            user_goal=user_goal,
             context=shared_context,
         )
-        if not fallback_completed:
-            output = (
-                "Fallback pipeline timed out. "
-                "Increase SUPERVISOR_PIPELINE_TIMEOUT_SECONDS and try again."
-            )
-        elif isinstance(fallback_result, Exception):
-            output = f"Fallback pipeline failed: {fallback_result}"
-        else:
-            output = str(fallback_result).strip()
+        if context_output:
+            output = context_output
+        elif not output:
+            output = "Supervisor output incomplete and no context state was produced."
 
     print(output if str(output).strip() else "No output generated.")
 
