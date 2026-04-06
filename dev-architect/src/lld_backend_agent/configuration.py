@@ -1,8 +1,29 @@
-import os
-from groq import Groq
-from dotenv import load_dotenv
+"""
+configuration.py
+Registers agent-adk as reusableagents package
+"""
 
-load_dotenv()
+import sys
+import types
+from pathlib import Path
+import importlib
 
-def get_llm():
-    return Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+def register_agent_adk():
+    if "reusableagents" in sys.modules:
+        return
+
+    adk_root = Path(__file__).resolve().parents[1] / "agent-adk"
+
+    pkg = types.ModuleType("reusableagents")
+    pkg.__path__ = [str(adk_root)]
+    sys.modules["reusableagents"] = pkg
+
+
+# Register once
+register_agent_adk()
+
+# Load config
+AgentConfig = importlib.import_module(
+    "reusableagents.config.settings"
+).AgentConfig
