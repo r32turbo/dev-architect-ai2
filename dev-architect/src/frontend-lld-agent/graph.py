@@ -1,11 +1,13 @@
 import importlib
 
-from langchain_google_vertexai import ChatVertexAI
-from langgraph.graph import END, START, StateGraph
-
-from configuration import AgentConfig, register_agent_adk
-from prompts import LLD_PROMPT, LLD_TASK
-from state import FrontendLLDState, ARCHITECTURE_DOC
+from configuration import (
+    GeminiConfig,
+    AgentConfig,
+    create_agent_llm,
+    create_validator_llm,
+    register_agent_adk,
+)
+from prompts import FRONTEND_LLD_PROMPT
 
 register_agent_adk()
 
@@ -13,14 +15,30 @@ ReusableReActAgent = importlib.import_module("reusableagents.agents.react_agent"
 OutputValidator    = importlib.import_module("reusableagents.agents.validator").OutputValidator
 
 
-def build_graph():
-    llm = ChatVertexAI(
-        model_name="gemini-2.5-flash-lite",
-        project="eds-alchemy",
+def build_agent() -> ReusableReActAgent:
+    """
+    Build and return the Frontend LLD ReAct agent.
+    Called by the supervisor with:
+        agent.run(
+            user_input=...,
+            requirement_doc=...,
+            architecture_doc=...,
+        )
+    """
+    # Step 1 – LLM config using GeminiConfig (same as sample main.py)
+    gemini_config = GeminiConfig(
+        project_id="eds-alchemy",
         location="us-central1",
-        temperature=0.0,
+        agent_model="gemini-2.5-flash-lite",
+        validator_model="gemini-2.5-flash-lite",
+        agent_temperature=0.0,
+        validator_temperature=0.0,
     )
 
+    agent_llm     = create_agent_llm(gemini_config)
+    validator_llm = create_validator_llm(gemini_config)
+
+    # Step 2 – Behavioural config
     agent_config = AgentConfig(
         max_react_iterations=5,
         enable_validation=True,
@@ -28,28 +46,19 @@ def build_graph():
         max_refinement_attempts=2,
     )
 
+    # Step 3 – Validator
     validator = OutputValidator(
-        llm=llm,
+        llm=validator_llm,
         score_threshold=agent_config.validation_score_threshold,
     )
 
-    react_agent = ReusableReActAgent(
+    # Step 4 – Assemble agent
+    agent = ReusableReActAgent(
         tools=[],
-        llm=llm,
-        prompt_builder=LLD_PROMPT,
+        llm=agent_llm,
+        prompt_builder=FRONTEND_LLD_PROMPT,
         validator=validator,
         config=agent_config,
     )
 
-    def generate_lld(state: FrontendLLDState) -> dict:
-        task = LLD_TASK.format(architecture_doc=state["architecture_doc"])
-        response = react_agent.run(task=task)
-        output = response.output if isinstance(response.output, str) else str(response.output)
-        return {"final_lld": output}
-
-    builder = StateGraph(FrontendLLDState)
-    builder.add_node("generate_lld", generate_lld)
-    builder.add_edge(START, "generate_lld")
-    builder.add_edge("generate_lld", END)
-
-    return builder.compile()
+    return agent
