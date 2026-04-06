@@ -2,6 +2,7 @@ import os
 import sys
 import types
 import importlib
+import logging
 import warnings
 from pathlib import Path
 
@@ -65,6 +66,8 @@ except ImportError:
     SECTION_EXTRACTION_PROMPT = prompts_module.SECTION_EXTRACTION_PROMPT
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 def _register_agent_adk_package() -> None:
@@ -161,33 +164,39 @@ def _run_task(task: str) -> str:
         # Known edge case: validator returns None and crashes score access.
         if "'NoneType' object has no attribute 'score'" not in str(exc):
             raise
+        logger.warning("Validation path failed, retrying task with fallback agent")
         response = fallback_react_agent.run(task=task)
     return response.output if isinstance(response.output, str) else str(response.output)
 
 
 def extract_sections(state: dict[str, str]) -> dict[str, str]:
+    logger.info("LLD stage: extract_sections")
     document = state["lld_input"]
     prompt = SECTION_EXTRACTION_PROMPT.format(document=document)
     return {"sections": _run_task(prompt)}
 
 
 def analyze_architecture(state: dict[str, str]) -> dict[str, str]:
+    logger.info("LLD stage: analyze_architecture")
     sections = state["sections"]
     prompt = ARCHITECTURE_ANALYSIS_PROMPT.format(sections=sections)
     return {"architecture_analysis": _run_task(prompt)}
 
 
 def generate_report(state: dict[str, str]) -> dict[str, str]:
+    logger.info("LLD stage: generate_report")
     analysis = state["architecture_analysis"]
     prompt = REPORT_GENERATION_PROMPT.format(analysis=analysis)
     return {"final_report": _run_task(prompt)}
 
 
 def run_pipeline(lld_input: str) -> dict[str, str]:
+    logger.info("Starting LLD standalone pipeline")
     state = {"lld_input": lld_input}
     state.update(extract_sections(state))
     state.update(analyze_architecture(state))
     state.update(generate_report(state))
+    logger.info("LLD standalone pipeline completed")
     return {
         "sections": str(state.get("sections", "")).strip(),
         "architecture_analysis": str(state.get("architecture_analysis", "")).strip(),
@@ -196,6 +205,10 @@ def run_pipeline(lld_input: str) -> dict[str, str]:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
     result = run_pipeline(LLD_INPUT)
 
     print("\n------ LLD REVIEW REPORT ------\n")

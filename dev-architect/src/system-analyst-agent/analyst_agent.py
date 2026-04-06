@@ -1,6 +1,7 @@
 import os
 import sys
 import importlib
+import logging
 import warnings
 from pathlib import Path
 
@@ -23,6 +24,8 @@ warnings.filterwarnings(
 ADK_ROOT = Path(__file__).resolve().parents[1] / "agent-adk"
 if str(ADK_ROOT) not in sys.path:
     sys.path.insert(0, str(ADK_ROOT))
+
+logger = logging.getLogger(__name__)
 
 
 def load_adk_components():
@@ -133,10 +136,16 @@ def build_agent():
 
 # ---------------- MAIN ----------------
 def main():
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+    logger.info("Starting system analyst standalone run")
     load_environment()
     agent = build_agent()
 
     user_goal = "Create a one page marketing website using NextJS ."
+    logger.info("Executing analyst run")
 
     result = agent.run(user_goal=user_goal)
     output = (result.output or "").strip()
@@ -150,6 +159,7 @@ def main():
         looks_truncated = output.endswith((":", "|", "-", "*", "```")) or last_line.startswith("|")
 
         if missing_sections or looks_truncated:
+            logger.info("Initial analyst response incomplete; running follow-up pass")
             continuation_prompt = (
                 "Provide ONLY the missing sections listed below. "
                 "Do not repeat sections already present. "
@@ -170,8 +180,10 @@ def main():
     output = deduplicate_output(output)
 
     if output:
+        logger.info("System analyst run completed successfully")
         print(output)
     else:
+        logger.warning("System analyst produced no output")
         print("No output generated.")
 
 

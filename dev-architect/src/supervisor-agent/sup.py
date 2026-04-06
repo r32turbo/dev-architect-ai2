@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import logging
 import os
 import re
 import subprocess
@@ -42,6 +43,8 @@ except Exception:
 
 if str(ADK_ROOT) not in sys.path:
     sys.path.insert(0, str(ADK_ROOT))
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_system_analyst_entry_path() -> Path:
@@ -648,8 +651,12 @@ def build_supervisor_agent():
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
     _load_environment()
-    print("Starting supervisor pipeline...", flush=True)
+    logger.info("Starting supervisor pipeline")
     supervisor = build_supervisor_agent()
     pipeline_timeout_seconds = int(os.getenv("SUPERVISOR_PIPELINE_TIMEOUT_SECONDS", "180"))
 
@@ -666,7 +673,7 @@ def main() -> None:
     except Exception:
         shared_context = None
 
-    print("Running supervisor orchestrator...", flush=True)
+    logger.info("Running supervisor orchestrator")
     completed, run_result = _run_with_timeout(
         supervisor.run,
         pipeline_timeout_seconds,
@@ -674,16 +681,15 @@ def main() -> None:
         context=shared_context,
     )
     if not completed:
-        print(
+        logger.warning(
             f"Supervisor orchestrator timed out after {pipeline_timeout_seconds}s; "
-            "switching to direct fallback pipeline.",
-            flush=True,
+            "switching to direct fallback pipeline."
         )
         run_result = None
 
     output = ""
     if isinstance(run_result, Exception):
-        print(f"Supervisor orchestrator failed: {run_result}", flush=True)
+        logger.error("Supervisor orchestrator failed: %s", run_result)
     elif run_result is not None:
         output = str(_extract_output_text(run_result)).strip()
     output = _normalize_orchestrator_output(output, user_goal)
@@ -693,7 +699,7 @@ def main() -> None:
     # Some model/tooling paths occasionally return an empty output payload.
     # Retry once before surfacing a no-output message.
     if not output:
-        print("Retrying supervisor orchestrator once...", flush=True)
+        logger.info("Retrying supervisor orchestrator once")
         retry_completed, retry_result = _run_with_timeout(
             supervisor.run,
             pipeline_timeout_seconds,
@@ -701,13 +707,12 @@ def main() -> None:
             context=shared_context,
         )
         if not retry_completed:
-            print(
+            logger.warning(
                 f"Supervisor retry timed out after {pipeline_timeout_seconds}s; "
-                "using direct fallback pipeline.",
-                flush=True,
+                "using direct fallback pipeline."
             )
         elif isinstance(retry_result, Exception):
-            print(f"Supervisor retry failed: {retry_result}", flush=True)
+            logger.error("Supervisor retry failed: %s", retry_result)
         else:
             output = str(_extract_output_text(retry_result)).strip()
         output = _normalize_orchestrator_output(output, user_goal)
@@ -718,7 +723,7 @@ def main() -> None:
     # Fallback to a deterministic two-step execution so callers always receive
     # the full combined response structure.
     if not _is_complete_combined_output(output):
-        print("Running direct fallback pipeline...", flush=True)
+        logger.info("Running direct fallback pipeline")
         fallback_completed, fallback_result = _run_with_timeout(
             _run_direct_fallback_pipeline,
             pipeline_timeout_seconds,
