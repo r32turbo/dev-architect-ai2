@@ -4,6 +4,7 @@ import importlib
 import logging
 import warnings
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -134,20 +135,23 @@ def build_agent():
     )
 
 
-# ---------------- MAIN ----------------
-def main():
-    logging.basicConfig(
-        level=os.getenv("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    )
-    logger.info("Starting system analyst standalone run")
+def run_system_analysis(user_goal: str, context: Any = None) -> str:
+    """Run the analyst workflow with optional shared context."""
     load_environment()
     agent = build_agent()
 
-    user_goal = "Create a one page marketing website using NextJS ."
-    logger.info("Executing analyst run")
+    if context is not None and callable(getattr(context, "record", None)):
+        context.record(
+            agent_name="system_analyst_agent",
+            event="started",
+            detail=str(user_goal)[:160],
+        )
 
-    result = agent.run(user_goal=user_goal)
+    run_kwargs = {"user_goal": user_goal}
+    if context is not None:
+        run_kwargs["context"] = context
+
+    result = agent.run(**run_kwargs)
     output = (result.output or "").strip()
 
     # Keep structure simple, with at most one follow-up pass if output looks incomplete.
@@ -168,7 +172,11 @@ def main():
                 "If no sections are missing, return an empty response."
             )
 
-            follow_up = agent.run(user_goal=continuation_prompt).output
+            follow_up_kwargs = {"user_goal": continuation_prompt}
+            if context is not None:
+                follow_up_kwargs["context"] = context
+
+            follow_up = agent.run(**follow_up_kwargs).output
             follow_up_text = follow_up.strip() if isinstance(follow_up, str) else str(follow_up).strip()
 
             if follow_up_text and follow_up_text != output:
@@ -178,6 +186,27 @@ def main():
                     output = f"{output}\n\n{follow_up_text}"
 
     output = deduplicate_output(output)
+
+    if context is not None and callable(getattr(context, "set_state", None)):
+        context.set_state("system_analyst.output", output)
+    if context is not None and callable(getattr(context, "record", None)):
+        context.record(agent_name="system_analyst_agent", event="completed")
+
+    return output
+
+
+# ---------------- MAIN ----------------
+def main():
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+    logger.info("Starting system analyst standalone run")
+    load_environment()
+
+    user_goal = "Create a one page marketing website using NextJS ."
+    logger.info("Executing analyst run")
+    output = run_system_analysis(user_goal=user_goal)
 
     if output:
         logger.info("System analyst run completed successfully")

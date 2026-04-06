@@ -5,6 +5,7 @@ import importlib
 import logging
 import warnings
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -157,45 +158,74 @@ fallback_react_agent = ReusableReActAgent(
 )
 
 
-def _run_task(task: str) -> str:
+def _run_task(task: str, context: Any = None) -> str:
+    run_kwargs = {"task": task}
+    if context is not None:
+        run_kwargs["context"] = context
+
     try:
-        response = react_agent.run(task=task)
+        response = react_agent.run(**run_kwargs)
     except AttributeError as exc:
         # Known edge case: validator returns None and crashes score access.
         if "'NoneType' object has no attribute 'score'" not in str(exc):
             raise
         logger.warning("Validation path failed, retrying task with fallback agent")
-        response = fallback_react_agent.run(task=task)
+        response = fallback_react_agent.run(**run_kwargs)
     return response.output if isinstance(response.output, str) else str(response.output)
 
 
-def extract_sections(state: dict[str, str]) -> dict[str, str]:
+def extract_sections(state: dict[str, str], context: Any = None) -> dict[str, str]:
     logger.info("LLD stage: extract_sections")
     document = state["lld_input"]
     prompt = SECTION_EXTRACTION_PROMPT.format(document=document)
-    return {"sections": _run_task(prompt)}
+    output = _run_task(prompt, context=context)
+    if context is not None and callable(getattr(context, "set_state", None)):
+        context.set_state("lld.sections", output)
+    return {"sections": output}
 
 
-def analyze_architecture(state: dict[str, str]) -> dict[str, str]:
+def analyze_architecture(state: dict[str, str], context: Any = None) -> dict[str, str]:
     logger.info("LLD stage: analyze_architecture")
     sections = state["sections"]
     prompt = ARCHITECTURE_ANALYSIS_PROMPT.format(sections=sections)
-    return {"architecture_analysis": _run_task(prompt)}
+    output = _run_task(prompt, context=context)
+    if context is not None and callable(getattr(context, "set_state", None)):
+        context.set_state("lld.architecture_analysis", output)
+    return {"architecture_analysis": output}
 
 
-def generate_report(state: dict[str, str]) -> dict[str, str]:
+def generate_report(state: dict[str, str], context: Any = None) -> dict[str, str]:
     logger.info("LLD stage: generate_report")
     analysis = state["architecture_analysis"]
     prompt = REPORT_GENERATION_PROMPT.format(analysis=analysis)
-    return {"final_report": _run_task(prompt)}
+    output = _run_task(prompt, context=context)
+    if context is not None and callable(getattr(context, "set_state", None)):
+        context.set_state("lld.final_report", output)
+    return {"final_report": output}
 
 
-def run_pipeline(lld_input: str) -> dict[str, str]:
+def run_pipeline(lld_input: str, context: Any = None) -> dict[str, str]:
     logger.info("Starting LLD standalone pipeline")
+    if context is not None and callable(getattr(context, "record", None)):
+        context.record(agent_name="lld_agent", event="started", detail=str(lld_input)[:160])
+
     state = {"lld_input": lld_input}
-    state.update(extract_sections(state))
-    state.update(analyze_architecture(state))
-    state.update(generate_report(state))
+    state.update(extract_sections(state, context=context))
+    state.update(analyze_architecture(state, context=context))
+    state.update(generate_report(state, context=context))
+
+    if context is not None and callable(getattr(context, "set_state", None)):
+        context.set_state(
+            "lld.output",
+            {
+                "sections": str(state.get("sections", "")).strip(),
+                "architecture_analysis": str(state.get("architecture_analysis", "")).strip(),
+                "final_report": str(state.get("final_report", "")).strip(),
+            },
+        )
+    if context is not None and callable(getattr(context, "record", None)):
+        context.record(agent_name="lld_agent", event="completed")
+
     logger.info("LLD standalone pipeline completed")
     return {
         "sections": str(state.get("sections", "")).strip(),

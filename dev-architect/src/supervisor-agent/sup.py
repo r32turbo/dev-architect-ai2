@@ -219,12 +219,18 @@ class SystemAnalystWorker:
             if hasattr(analyst_module, "load_environment"):
                 analyst_module.load_environment()
             self._agent = analyst_module.build_agent()
+            self._module = analyst_module
 
-        run_kwargs = {"user_goal": task}
-        if context is not None:
-            run_kwargs["context"] = context
-        result = self._agent.run(**run_kwargs)
-        output = result.output if hasattr(result, "output") else str(result)
+        output = ""
+        run_in_module = getattr(getattr(self, "_module", None), "run_system_analysis", None)
+        if callable(run_in_module):
+            output = run_in_module(user_goal=task, context=context)
+        else:
+            run_kwargs = {"user_goal": task}
+            if context is not None:
+                run_kwargs["context"] = context
+            result = self._agent.run(**run_kwargs)
+            output = result.output if hasattr(result, "output") else str(result)
         if context is not None and callable(getattr(context, "set_state", None)):
             context.set_state("system_analyst.output", str(output).strip())
             context.record(agent_name="system_analyst_worker", event="completed")
@@ -268,7 +274,14 @@ class LLDWorker:
 
                 adk_root = Path(sys.argv[1])
                 app_path = Path(sys.argv[2])
-                lld_input = sys.stdin.read()
+                payload = {}
+                raw_input = sys.stdin.read()
+                try:
+                    payload = json.loads(raw_input) if raw_input.strip() else {}
+                except json.JSONDecodeError:
+                    payload = {"lld_input": raw_input}
+                lld_input = str(payload.get("lld_input", ""))
+                context_state = payload.get("context_state", {})
 
                 if str(adk_root) not in sys.path:
                     sys.path.insert(0, str(adk_root))
@@ -325,10 +338,23 @@ class LLDWorker:
                 sys.modules[spec.name] = module
                 spec.loader.exec_module(module)
 
+                context_obj = None
+                if isinstance(context_state, dict):
+                    try:
+                        context_mod = importlib.import_module("context")
+                        context_obj = context_mod.AgentContext(state=context_state)
+                    except Exception:
+                        context_obj = None
+
                 if hasattr(module, "graph"):
                     result = module.graph.invoke({"lld_input": lld_input})
                 elif hasattr(module, "run_pipeline"):
-                    result = module.run_pipeline(lld_input)
+                    try:
+                        result = module.run_pipeline(lld_input, context=context_obj)
+                    except TypeError as exc:
+                        if "unexpected keyword argument 'context'" not in str(exc):
+                            raise
+                        result = module.run_pipeline(lld_input)
                 else:
                     raise RuntimeError("LLD module does not expose graph or run_pipeline")
                 print(
@@ -343,9 +369,20 @@ class LLDWorker:
                 """
             ).strip()
 
+            context_state: dict[str, Any] = {}
+            if isinstance(getattr(context, "state", None), dict):
+                context_state = dict(context.state)
+            subprocess_input = json.dumps(
+                {
+                    "lld_input": task,
+                    "context_state": context_state,
+                },
+                ensure_ascii=True,
+            )
+
             completed = subprocess.run(
                 [sys.executable, "-c", runner, str(ADK_ROOT), str(lld_app_path)],
-                input=task,
+                input=subprocess_input,
                 capture_output=True,
                 text=True,
                 check=True,
