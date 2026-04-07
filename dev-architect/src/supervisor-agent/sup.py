@@ -12,9 +12,12 @@ import types
 import warnings
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from reusableagents.context import AgentContext  # type: ignore[reportMissingImports]
 
 
 SRC_DIR = Path(__file__).resolve().parents[1]
@@ -138,12 +141,12 @@ def _materialize_lld_app_from_branch(branch_name: str) -> Path:
             )
         content = completed.stdout
         if local_name == "lld_createagent.py":
-            # Normalize import paths to avoid class identity mismatches between
-            # reusableagents.* and top-level agents/prompts/config modules.
-            content = content.replace("reusableagents.agents.react_agent", "agents.react_agent")
-            content = content.replace("reusableagents.agents.validator", "agents.validator")
-            content = content.replace("reusableagents.config.settings", "config.settings")
-            content = content.replace("reusableagents.prompts.base", "prompts.base")
+            # Normalize imports to reusableagents.* so all modules resolve to
+            # the same class identities at runtime.
+            content = content.replace("agents.react_agent", "reusableagents.agents.react_agent")
+            content = content.replace("agents.validator", "reusableagents.agents.validator")
+            content = content.replace("config.settings", "reusableagents.config.settings")
+            content = content.replace("prompts.base", "reusableagents.prompts.base")
             content = content.replace("enable_validation=True", "enable_validation=False")
         (temp_dir / local_name).write_text(content, encoding="utf-8")
 
@@ -176,12 +179,15 @@ def _load_module(module_name: str, file_path: Path) -> ModuleType:
 def _load_adk_components():
     _ensure_reusableagents_package()
 
-    supervisor_mod = __import__("agents.supervisor", fromlist=["SupervisorAgent", "WorkerSpec"])
-    react_mod = __import__("agents.react_agent", fromlist=["AgentResponse"])
-    llm_mod = __import__("llm.gemini", fromlist=["create_agent_llm"])
-    prompts_mod = __import__("prompts.base", fromlist=["PromptBuilder"])
+    supervisor_mod = __import__(
+        "reusableagents.agents.supervisor",
+        fromlist=["SupervisorAgent", "WorkerSpec"],
+    )
+    react_mod = __import__("reusableagents.agents.react_agent", fromlist=["AgentResponse"])
+    llm_mod = __import__("reusableagents.llm.gemini", fromlist=["create_agent_llm"])
+    prompts_mod = __import__("reusableagents.prompts.base", fromlist=["PromptBuilder"])
     config_mod = __import__(
-        "config.settings",
+        "reusableagents.config.settings",
         fromlist=["SupervisorConfig", "ExecutionMode", "GeminiConfig"],
     )
 
@@ -202,7 +208,7 @@ class SystemAnalystWorker:
         self._agent_response_type = agent_response_type
         self._agent = None
 
-    def run(self, task: str, context: Any = None):
+    def run(self, task: str, context: "AgentContext | None" = None):
         if context is not None and callable(getattr(context, "record", None)):
             context.record(
                 agent_name="system_analyst_worker",
@@ -224,9 +230,19 @@ class SystemAnalystWorker:
         output = ""
         run_in_module = getattr(getattr(self, "_module", None), "run_system_analysis", None)
         if callable(run_in_module):
-            output = run_in_module(user_goal=task, context=context)
+            if context is not None and callable(getattr(context, "set_state", None)):
+                context.set_state("user_goal", str(task).strip())
+            try:
+                output = run_in_module(context=context)
+            except TypeError as exc:
+                if "required positional argument" not in str(exc):
+                    raise
+                output = run_in_module(user_goal=task, context=context)
         else:
-            run_kwargs = {"user_goal": task}
+            goal = str(task).strip()
+            if isinstance(getattr(context, "state", None), dict):
+                goal = str(context.state.get("user_goal", goal)).strip() or goal
+            run_kwargs = {"user_goal": goal}
             if context is not None:
                 run_kwargs["context"] = context
             result = self._agent.run(**run_kwargs)
@@ -241,7 +257,7 @@ class LLDWorker:
     def __init__(self, agent_response_type: Any) -> None:
         self._agent_response_type = agent_response_type
 
-    def run(self, task: str, context: Any = None):
+    def run(self, task: str, context: "AgentContext | None" = None):
         if context is not None and callable(getattr(context, "record", None)):
             context.record(
                 agent_name="lld_worker",
@@ -295,21 +311,21 @@ class LLDWorker:
 
                 # Ensure reusableagents.* and top-level modules resolve to identical objects.
                 # This prevents PromptBuilder type identity mismatches in branch LLD code.
-                agents_mod = importlib.import_module("agents")
-                react_mod = importlib.import_module("agents.react_agent")
-                validator_mod = importlib.import_module("agents.validator")
-                prompts_pkg_mod = importlib.import_module("prompts")
-                prompts_base_mod = importlib.import_module("prompts.base")
-                config_mod = importlib.import_module("config")
-                config_settings_mod = importlib.import_module("config.settings")
+                reusable_agents_mod = importlib.import_module("reusableagents.agents")
+                react_mod = importlib.import_module("reusableagents.agents.react_agent")
+                validator_mod = importlib.import_module("reusableagents.agents.validator")
+                reusable_prompts_mod = importlib.import_module("reusableagents.prompts")
+                prompts_base_mod = importlib.import_module("reusableagents.prompts.base")
+                reusable_config_mod = importlib.import_module("reusableagents.config")
+                config_settings_mod = importlib.import_module("reusableagents.config.settings")
 
-                sys.modules["reusableagents.agents"] = agents_mod
-                sys.modules["reusableagents.agents.react_agent"] = react_mod
-                sys.modules["reusableagents.agents.validator"] = validator_mod
-                sys.modules["reusableagents.prompts"] = prompts_pkg_mod
-                sys.modules["reusableagents.prompts.base"] = prompts_base_mod
-                sys.modules["reusableagents.config"] = config_mod
-                sys.modules["reusableagents.config.settings"] = config_settings_mod
+                sys.modules["agents"] = reusable_agents_mod
+                sys.modules["agents.react_agent"] = react_mod
+                sys.modules["agents.validator"] = validator_mod
+                sys.modules["prompts"] = reusable_prompts_mod
+                sys.modules["prompts.base"] = prompts_base_mod
+                sys.modules["config"] = reusable_config_mod
+                sys.modules["config.settings"] = config_settings_mod
 
                 # Pre-load ADK prompts package to prevent branch prompts.py from shadowing it
                 prompts_pkg_path = adk_root / "prompts"
@@ -341,7 +357,7 @@ class LLDWorker:
                 context_obj = None
                 if isinstance(context_state, dict):
                     try:
-                        context_mod = importlib.import_module("context")
+                        context_mod = importlib.import_module("reusableagents.context")
                         context_obj = context_mod.AgentContext(state=context_state)
                     except Exception:
                         context_obj = None
@@ -548,10 +564,6 @@ def _coerce_partial_orchestrator_output(text: str, user_goal: str) -> str:
     lld_arch = parsed.get("LLD Architecture Analysis", "").strip()
     lld_final = parsed.get("LLD Final Report", "").strip()
 
-    # If only one LLD section appears, preserve it as final report fallback.
-    if not lld_final and (lld_sections or lld_arch):
-        lld_final = lld_arch or lld_sections
-
     return _render_combined_output(
         user_goal=user_goal_text,
         system_analyst_output=system_text,
@@ -582,58 +594,12 @@ def _render_combined_output(
     ).strip()
 
 
-def _build_output_from_context(user_goal: str, context: Any = None) -> str:
-    """Build canonical output directly from shared context state when available."""
-    state = getattr(context, "state", None)
-    if not isinstance(state, dict):
-        return ""
-
-    system_analyst_output = str(state.get("system_analyst.output", "")).strip()
-
-    lld_output = state.get("lld.output")
-    lld_seclearctions = ""
-    lld_architecture_analysis = ""
-    lld_final_report = ""
-
-    if isinstance(lld_output, dict):
-        lld_sections = str(lld_output.get("sections", "")).strip()
-        lld_architecture_analysis = str(lld_output.get("architecture_analysis", "")).strip()
-        lld_final_report = str(lld_output.get("final_report", "")).strip()
-    elif isinstance(lld_output, str):
-        try:
-            payload = json.loads(lld_output)
-        except json.JSONDecodeError:
-            payload = {"final_report": lld_output}
-        lld_sections = str(payload.get("sections", "")).strip()
-        lld_architecture_analysis = str(payload.get("architecture_analysis", "")).strip()
-        lld_final_report = str(payload.get("final_report", "")).strip()
-
-    # Accept granular state keys if consolidated payload is missing fields.
-    if not lld_sections:
-        lld_sections = str(state.get("lld.sections", "")).strip()
-    if not lld_architecture_analysis:
-        lld_architecture_analysis = str(state.get("lld.architecture_analysis", "")).strip()
-    if not lld_final_report:
-        lld_final_report = str(state.get("lld.final_report", "")).strip()
-
-    if not any([system_analyst_output, lld_sections, lld_architecture_analysis, lld_final_report]):
-        return ""
-
-    return _render_combined_output(
-        user_goal=user_goal,
-        system_analyst_output=system_analyst_output,
-        lld_sections=lld_sections,
-        lld_architecture_analysis=lld_architecture_analysis,
-        lld_final_report=lld_final_report,
-    )
-
-
-def _ensure_non_empty_combined_output(
+def _canonicalize_combined_output(
     text: str,
     user_goal: str,
-    context: Any = None,
+    context: "AgentContext | None" = None,
 ) -> str:
-    """Normalize final output and ensure no section is blank."""
+    """Normalize final output into canonical sections without synthetic fallbacks."""
     parsed = _extract_markdown_sections(str(text or ""))
     state = getattr(context, "state", None)
     state = state if isinstance(state, dict) else {}
@@ -653,7 +619,6 @@ def _ensure_non_empty_combined_output(
     system_text = _pick(
         parsed.get("System Analyst Output", ""),
         str(state.get("system_analyst.output", "")),
-        "System analyst output unavailable (worker returned empty content).",
     )
 
     lld_output = state.get("lld.output")
@@ -669,7 +634,6 @@ def _ensure_non_empty_combined_output(
         parsed.get("LLD Sections", ""),
         str(lld_dict.get("sections", "")),
         str(state.get("lld.sections", "")),
-        "LLD sections unavailable (worker returned partial content).",
     )
     lld_architecture_analysis = _pick(
         parsed.get("LLD Architecture Analysis", ""),
@@ -682,62 +646,12 @@ def _ensure_non_empty_combined_output(
         str(state.get("lld.final_report", "")),
     )
 
-    if not lld_architecture_analysis:
-        lld_architecture_analysis = (
-            "LLD architecture analysis unavailable; using best available extracted sections as fallback.\n\n"
-            f"{lld_sections}"
-        )
-    if not lld_final_report:
-        lld_final_report = (
-            "LLD final report unavailable; using best available architecture analysis as fallback.\n\n"
-            f"{lld_architecture_analysis}"
-        )
-
     return _render_combined_output(
         user_goal=user_goal_text,
         system_analyst_output=system_text,
         lld_sections=lld_sections,
         lld_architecture_analysis=lld_architecture_analysis,
         lld_final_report=lld_final_report,
-    )
-
-
-def _run_direct_fallback_pipeline(user_goal: str, context: Any = None) -> str:
-    (
-        _SupervisorAgent,
-        _WorkerSpec,
-        AgentResponse,
-        _create_agent_llm,
-        _PromptBuilder,
-        _SupervisorConfig,
-        _ExecutionMode,
-        _GeminiConfig,
-    ) = _load_adk_components()
-
-    system_worker = SystemAnalystWorker(AgentResponse)
-    lld_worker = LLDWorker(AgentResponse)
-
-    analyst_result = system_worker.run(user_goal, context=context)
-    analyst_text = str(_extract_output_text(analyst_result)).strip()
-
-    lld_result = lld_worker.run(analyst_text, context=context)
-    lld_raw = str(_extract_output_text(lld_result)).strip()
-
-    try:
-        payload = json.loads(lld_raw) if lld_raw else {}
-    except json.JSONDecodeError:
-        payload = {
-            "sections": "",
-            "architecture_analysis": "",
-            "final_report": lld_raw,
-        }
-
-    return _render_combined_output(
-        user_goal=user_goal,
-        system_analyst_output=analyst_text,
-        lld_sections=str(payload.get("sections", "")).strip(),
-        lld_architecture_analysis=str(payload.get("architecture_analysis", "")).strip(),
-        lld_final_report=str(payload.get("final_report", "")).strip(),
     )
 
 
@@ -825,7 +739,7 @@ def main() -> None:
 
     shared_context = None
     try:
-        context_mod = __import__("context", fromlist=["AgentContext"])
+        context_mod = __import__("reusableagents.context", fromlist=["AgentContext"])
         shared_context = context_mod.AgentContext(state={"user_goal": user_goal})
     except Exception:
         shared_context = None
@@ -838,10 +752,7 @@ def main() -> None:
         context=shared_context,
     )
     if not completed:
-        logger.warning(
-            f"Supervisor orchestrator timed out after {pipeline_timeout_seconds}s; "
-            "attempting context-based output completion."
-        )
+        logger.warning(f"Supervisor orchestrator timed out after {pipeline_timeout_seconds}s")
         run_result = None
 
     output = ""
@@ -850,69 +761,10 @@ def main() -> None:
     elif run_result is not None:
         output = str(_extract_output_text(run_result)).strip()
     output = _normalize_orchestrator_output(output, user_goal)
-    output = _ensure_non_empty_combined_output(output, user_goal=user_goal, context=shared_context)
+    output = _canonicalize_combined_output(output, user_goal=user_goal, context=shared_context)
     if output and not _is_complete_combined_output(output):
         output = _coerce_partial_orchestrator_output(output, user_goal)
-        output = _ensure_non_empty_combined_output(output, user_goal=user_goal, context=shared_context)
-    if not _is_complete_combined_output(output):
-        context_output = _build_output_from_context(user_goal=user_goal, context=shared_context)
-        context_output = _ensure_non_empty_combined_output(
-            context_output,
-            user_goal=user_goal,
-            context=shared_context,
-        )
-        if _is_complete_combined_output(context_output):
-            logger.info("Recovered complete output from shared context")
-            output = context_output
-
-    # Some model/tooling paths occasionally return an empty output payload.
-    # Retry once before surfacing a no-output message.
-    if not output:
-        logger.info("Retrying supervisor orchestrator once")
-        retry_completed, retry_result = _run_with_timeout(
-            supervisor.run,
-            pipeline_timeout_seconds,
-            task=user_goal,
-            context=shared_context,
-        )
-        if not retry_completed:
-            logger.warning(
-                f"Supervisor retry timed out after {pipeline_timeout_seconds}s; "
-                "attempting context-based output completion."
-            )
-        elif isinstance(retry_result, Exception):
-            logger.error("Supervisor retry failed: %s", retry_result)
-        else:
-            output = str(_extract_output_text(retry_result)).strip()
-        output = _normalize_orchestrator_output(output, user_goal)
-        output = _ensure_non_empty_combined_output(output, user_goal=user_goal, context=shared_context)
-        if output and not _is_complete_combined_output(output):
-            output = _coerce_partial_orchestrator_output(output, user_goal)
-            output = _ensure_non_empty_combined_output(output, user_goal=user_goal, context=shared_context)
-        if not _is_complete_combined_output(output):
-            context_output = _build_output_from_context(user_goal=user_goal, context=shared_context)
-            context_output = _ensure_non_empty_combined_output(
-                context_output,
-                user_goal=user_goal,
-                context=shared_context,
-            )
-            if _is_complete_combined_output(context_output):
-                logger.info("Recovered complete output from shared context after retry")
-                output = context_output
-
-    # If model output is still incomplete, render whatever is available in context
-    # rather than launching a separate fallback pipeline.
-    if not _is_complete_combined_output(output):
-        context_output = _build_output_from_context(user_goal=user_goal, context=shared_context)
-        context_output = _ensure_non_empty_combined_output(
-            context_output,
-            user_goal=user_goal,
-            context=shared_context,
-        )
-        if context_output:
-            output = context_output
-        elif not output:
-            output = "Supervisor output incomplete and no context state was produced."
+        output = _canonicalize_combined_output(output, user_goal=user_goal, context=shared_context)
 
     print(output if str(output).strip() else "No output generated.")
 

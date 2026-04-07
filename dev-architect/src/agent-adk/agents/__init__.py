@@ -1,8 +1,9 @@
 """Agent sub-package."""
 
-from agents.react_agent import AgentResponse, ReusableReActAgent
-from agents.supervisor import SupervisorAgent, WorkerSpec
-from agents.validator import OutputValidator, ValidationResult
+from reusableagents.agents.react_agent import AgentResponse, ReusableReActAgent
+from reusableagents.agents.supervisor import SupervisorAgent, WorkerSpec
+from reusableagents.agents.validator import OutputValidator, ValidationResult
+from reusableagents.context import AgentContext, AuthInfo, HistoryEntry, SessionInfo
 
 __all__ = [
     "ReusableReActAgent",
@@ -11,4 +12,8 @@ __all__ = [
     "ValidationResult",
     "SupervisorAgent",
     "WorkerSpec",
+    "AgentContext",
+    "SessionInfo",
+    "AuthInfo",
+    "HistoryEntry",
 ]

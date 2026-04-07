@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from langchain_google_vertexai import ChatVertexAI
 
-from config.settings import GeminiConfig
+from reusableagents.config.settings import GeminiConfig
 
 
 def create_agent_llm(config: GeminiConfig | None = None) -> ChatVertexAI:
@@ -47,7 +47,6 @@ def create_agent_llm(config: GeminiConfig | None = None) -> ChatVertexAI:
         location=cfg.location,
         temperature=cfg.agent_temperature,
         max_output_tokens=cfg.max_output_tokens,
-        timeout=cfg.timeout_seconds,
     )
 
 
@@ -76,5 +75,4 @@ def create_validator_llm(config: GeminiConfig | None = None) -> ChatVertexAI:
         location=cfg.location,
         temperature=cfg.validator_temperature,
         max_output_tokens=cfg.max_output_tokens,
-        timeout=cfg.timeout_seconds,
     )

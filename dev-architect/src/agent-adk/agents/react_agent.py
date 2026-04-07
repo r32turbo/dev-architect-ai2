@@ -35,13 +35,14 @@ from typing import Any, List, Optional, Sequence, Type
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
-from agents.validator import OutputValidator
-from config.settings import AgentConfig
-from prompts.base import PromptBuilder
+from reusableagents.agents.validator import OutputValidator
+from reusableagents.config.settings import AgentConfig
+from reusableagents.context import AgentContext
+from reusableagents.prompts.base import PromptBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +162,16 @@ class ReusableReActAgent:
         is stored in :attr:`AgentResponse.output` instead of the raw string.
         Validation and refinement, when enabled, still operate on the
         intermediate text before the structured-extraction step.
+    context:
+        An optional :class:`~reusableagents.context.AgentContext` instance
+        carrying session metadata, authentication / authorisation info, and
+        shared mutable state.  When ``None``, the agent creates a fresh
+        context automatically on the first ``run()`` call.  In a multi-agent
+        pipeline the :class:`~reusableagents.agents.supervisor.SupervisorAgent`
+        passes the same context to every worker so they can share state.
+        A context may also be supplied at ``run()`` time via the special
+        ``context`` keyword argument (which takes precedence over the
+        constructor-level value).
 
     Examples
     --------
@@ -204,6 +215,7 @@ class ReusableReActAgent:
         validator: Optional[OutputValidator] = None,
         config: Optional[AgentConfig] = None,
         output_schema: Optional[Type[BaseModel]] = None,
+        context: Optional[AgentContext] = None,
     ) -> None:
         # ------------------------------------------------------------------
         # Validate all constructor arguments eagerly so that misconfiguration
@@ -215,14 +227,10 @@ class ReusableReActAgent:
                 f"got {type(llm).__name__!r}"
             )
         if not isinstance(prompt_builder, PromptBuilder):
-            # Accept equivalent PromptBuilder objects loaded through alternate
-            # import paths (for example reusableagents.prompts.base vs prompts.base).
-            is_compatible_prompt_builder = type(prompt_builder).__name__ == "PromptBuilder"
-            if not is_compatible_prompt_builder:
-                raise TypeError(
-                    f"prompt_builder must be a PromptBuilder instance, "
-                    f"got {type(prompt_builder).__name__!r}"
-                )
+            raise TypeError(
+                f"prompt_builder must be a PromptBuilder instance, "
+                f"got {type(prompt_builder).__name__!r}"
+            )
         if validator is not None and not isinstance(validator, OutputValidator):
             raise TypeError(
                 f"validator must be an OutputValidator instance or None, "
@@ -250,6 +258,11 @@ class ReusableReActAgent:
                 f"(pass the class itself, not an instance); "
                 f"got {type(output_schema).__name__!r}"
             )
+        if context is not None and not isinstance(context, AgentContext):
+            raise TypeError(
+                f"context must be an AgentContext instance or None, "
+                f"got {type(context).__name__!r}"
+            )
         # ------------------------------------------------------------------
         self.tools = _tools
         self.llm = llm
@@ -257,6 +270,7 @@ class ReusableReActAgent:
         self.validator = validator
         self.config = config or AgentConfig()
         self.output_schema: Optional[Type[BaseModel]] = output_schema
+        self.context: Optional[AgentContext] = context
 
     # ------------------------------------------------------------------
     # Public API
@@ -273,6 +287,11 @@ class ReusableReActAgent:
             Must supply values for every ``{variable}`` used in the
             :class:`~reusableagents.prompts.base.PromptBuilder`.
 
+            A special ``context`` keyword may be passed to supply an
+            :class:`~reusableagents.context.AgentContext`.  If neither
+            the constructor nor ``run()`` receives a context, one is
+            created automatically with default values.
+
         Returns
         -------
         AgentResponse
@@ -285,44 +304,48 @@ class ReusableReActAgent:
             If the agent exceeds ``max_react_iterations`` without reaching a
             final answer.  Catch this to handle runaway loops gracefully.
         """
-        context = _coerce_shared_context(prompt_variables.get("context"))
-        rendered_variables = dict(prompt_variables)
-        if context is not None:
-            rendered_variables["context"] = context.state
-            context.record(
-                agent_name="react_agent",
-                event="started",
+        # --- resolve context (run-time > constructor > auto-create) ---
+        ctx = prompt_variables.pop("context", None)
+        if ctx is not None and not isinstance(ctx, AgentContext):
+            raise TypeError(
+                f"context must be an AgentContext instance or None, "
+                f"got {type(ctx).__name__!r}"
             )
+        if ctx is None:
+            ctx = self.context
+        if ctx is None:
+            ctx = AgentContext()
+            logger.debug("Auto-created AgentContext (session=%s)", ctx.session.session_id)
+        self.context = ctx
 
-        try:
-            system_prompt = self.prompt_builder.render_system(**rendered_variables)
-            user_message = self.prompt_builder.render_user(**rendered_variables)
+        ctx.record("ReusableReActAgent", "started")
 
-            output, messages = self._invoke_agent(system_prompt, user_message)
+        system_prompt = self.prompt_builder.render_system(**prompt_variables)
+        user_message = self.prompt_builder.render_user(**prompt_variables)
 
-            if self.validator and self.config.enable_validation:
-                response = self._validate_and_refine(
-                    system_prompt=system_prompt,
-                    original_input=user_message,
-                    agent_output=output,
-                    raw_messages=messages,
-                    prompt_variables=rendered_variables,
-                )
-            else:
-                response = AgentResponse(output=output, raw_messages=messages)
+        output, messages = self._invoke_agent(system_prompt, user_message)
 
-            if context is not None:
-                context.set_state("react_agent.last_output", response.output)
-                context.record(agent_name="react_agent", event="completed")
-        except Exception as exc:
-            if context is not None:
-                context.record(agent_name="react_agent", event="error", detail=str(exc))
-            raise
+        if self.validator and self.config.enable_validation:
+            response = self._validate_and_refine(
+                system_prompt=system_prompt,
+                original_input=user_message,
+                agent_output=output,
+                raw_messages=messages,
+                prompt_variables=prompt_variables,
+            )
+        else:
+            response = AgentResponse(output=output, raw_messages=messages)
 
         if self.output_schema is not None:
             text = response.output if isinstance(response.output, str) else str(response.output)
             structured = self._extract_structured_output(text)
             response = response.model_copy(update={"output": structured})
+
+        ctx.record(
+            "ReusableReActAgent",
+            "completed",
+            detail=str(response.output)[:200] if response.output else None,
+        )
 
         return response
 
@@ -369,33 +392,20 @@ class ReusableReActAgent:
 
     @staticmethod
     def _extract_text(messages: List[BaseMessage]) -> str:
-        """Return the latest non-empty text, preferring assistant messages."""
+        """Return the text content of the last message in the list."""
         if not messages:
             return ""
-
-        def _content_to_text(content: Any) -> str:
-            if isinstance(content, str):
-                return content.strip()
-            if isinstance(content, list):
-                parts = [
-                    c.get("text", "") if isinstance(c, dict) else str(c)
-                    for c in content
-                ]
-                return "".join(parts).strip()
-            return str(content).strip()
-
-        for message in reversed(messages):
-            if isinstance(message, AIMessage):
-                text = _content_to_text(message.content)
-                if text:
-                    return text
-
-        for message in reversed(messages):
-            text = _content_to_text(message.content)
-            if text:
-                return text
-
-        return ""
+        last = messages[-1]
+        if isinstance(last.content, str):
+            return last.content
+        # Handle list-of-dicts content (e.g. tool-call responses).
+        if isinstance(last.content, list):
+            parts = [
+                c.get("text", "") if isinstance(c, dict) else str(c)
+                for c in last.content
+            ]
+            return "".join(parts)
+        return str(last.content)
 
     def _invoke_agent_with_feedback(
         self,
@@ -563,16 +573,3 @@ class ReusableReActAgent:
             refinement_attempts=attempts,
             raw_messages=current_messages,
         )
-
-
-def _coerce_shared_context(value: Any) -> Any:
-    """Return a context-like object only when it exposes the required API."""
-    if value is None:
-        return None
-    has_record = callable(getattr(value, "record", None))
-    has_set_state = callable(getattr(value, "set_state", None))
-    has_state_attr = hasattr(value, "state")
-    if has_record and has_set_state and has_state_attr:
-        return value
-    logger.warning("Ignoring non-context value passed as 'context': %s", type(value).__name__)
-    return None

@@ -22,7 +22,7 @@ from typing import Any, Optional
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from prompts.base import PromptBuilder
+from reusableagents.prompts.base import PromptBuilder
 
 logger = logging.getLogger(__name__)
 

@@ -5,9 +5,12 @@ import importlib
 import logging
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from reusableagents.context import AgentContext  # type: ignore[reportMissingImports]
 
 # Hide known ChatVertexAI deprecation warnings from terminal output.
 warnings.filterwarnings(
@@ -114,7 +117,11 @@ def _chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
     return chunks or [source]
 
 
-def _merge_chunk_outputs(stage_name: str, outputs: list[str], context: Any = None) -> str:
+def _merge_chunk_outputs(
+    stage_name: str,
+    outputs: list[str],
+    context: "AgentContext | None" = None,
+) -> str:
     cleaned_outputs = [str(item).strip() for item in outputs if str(item).strip()]
     if not cleaned_outputs:
         return ""
@@ -136,7 +143,10 @@ def _merge_chunk_outputs(stage_name: str, outputs: list[str], context: Any = Non
     return _run_task(merge_prompt, context=context)
 
 
-def _resolve_user_goal(context: Any = None, state: dict[str, str] | None = None) -> str:
+def _resolve_user_goal(
+    context: "AgentContext | None" = None,
+    state: dict[str, str] | None = None,
+) -> str:
     if context is not None:
         ctx_state = getattr(context, "state", None)
         if isinstance(ctx_state, dict):
@@ -151,15 +161,6 @@ def _resolve_user_goal(context: Any = None, state: dict[str, str] | None = None)
             return first_line[:200]
 
     return "Unknown goal"
-
-
-def _goal_anchored_prompt(base_prompt: str, user_goal: str) -> str:
-    return (
-        f"Original user goal (must remain unchanged): {user_goal}\n"
-        "Strict instruction: Keep all outputs in the same domain as this goal. "
-        "If input text appears mixed, prioritize the content aligned with this goal and ignore unrelated domains.\n\n"
-        f"{base_prompt}"
-    )
 
 
 def _register_agent_adk_package() -> None:
@@ -179,16 +180,16 @@ def _register_agent_adk_package() -> None:
 _register_agent_adk_package()
 
 ReusableReActAgent = importlib.import_module(
-    "agents.react_agent"
+    "reusableagents.agents.react_agent"
 ).ReusableReActAgent
 OutputValidator = importlib.import_module(
-    "agents.validator"
+    "reusableagents.agents.validator"
 ).OutputValidator
-settings_mod = importlib.import_module("config.settings")
+settings_mod = importlib.import_module("reusableagents.config.settings")
 AgentConfig = settings_mod.AgentConfig
 GeminiConfig = settings_mod.GeminiConfig
-PromptBuilder = importlib.import_module("prompts.base").PromptBuilder
-llm_mod = importlib.import_module("llm.gemini")
+PromptBuilder = importlib.import_module("reusableagents.prompts.base").PromptBuilder
+llm_mod = importlib.import_module("reusableagents.llm.gemini")
 create_agent_llm = llm_mod.create_agent_llm
 create_validator_llm = llm_mod.create_validator_llm
 
@@ -249,7 +250,7 @@ fallback_react_agent = ReusableReActAgent(
 )
 
 
-def _run_task(task: str, context: Any = None) -> str:
+def _run_task(task: str, context: "AgentContext | None" = None) -> str:
     run_kwargs = {"task": task}
     if context is not None:
         run_kwargs["context"] = context
@@ -265,7 +266,10 @@ def _run_task(task: str, context: Any = None) -> str:
     return response.output if isinstance(response.output, str) else str(response.output)
 
 
-def extract_sections(state: dict[str, str], context: Any = None) -> dict[str, str]:
+def extract_sections(
+    state: dict[str, str],
+    context: "AgentContext | None" = None,
+) -> dict[str, str]:
     logger.info("LLD stage: extract_sections")
     document = state["lld_input"]
     user_goal = _resolve_user_goal(context=context, state=state)
@@ -277,8 +281,8 @@ def extract_sections(state: dict[str, str], context: Any = None) -> dict[str, st
 
     chunk_outputs: list[str] = []
     for idx, chunk in enumerate(doc_chunks):
-        prompt = _goal_anchored_prompt(
-            SECTION_EXTRACTION_PROMPT.format(document=chunk),
+        prompt = SECTION_EXTRACTION_PROMPT.format(
+            document=chunk,
             user_goal=user_goal,
         )
         result = _run_task(prompt, context=context)
@@ -292,7 +296,10 @@ def extract_sections(state: dict[str, str], context: Any = None) -> dict[str, st
     return {"sections": output}
 
 
-def analyze_architecture(state: dict[str, str], context: Any = None) -> dict[str, str]:
+def analyze_architecture(
+    state: dict[str, str],
+    context: "AgentContext | None" = None,
+) -> dict[str, str]:
     logger.info("LLD stage: analyze_architecture")
     sections = state["sections"]
     user_goal = _resolve_user_goal(context=context, state=state)
@@ -304,8 +311,8 @@ def analyze_architecture(state: dict[str, str], context: Any = None) -> dict[str
 
     chunk_outputs: list[str] = []
     for idx, chunk in enumerate(section_chunks):
-        prompt = _goal_anchored_prompt(
-            ARCHITECTURE_ANALYSIS_PROMPT.format(sections=chunk),
+        prompt = ARCHITECTURE_ANALYSIS_PROMPT.format(
+            sections=chunk,
             user_goal=user_goal,
         )
         result = _run_task(prompt, context=context)
@@ -319,7 +326,10 @@ def analyze_architecture(state: dict[str, str], context: Any = None) -> dict[str
     return {"architecture_analysis": output}
 
 
-def generate_report(state: dict[str, str], context: Any = None) -> dict[str, str]:
+def generate_report(
+    state: dict[str, str],
+    context: "AgentContext | None" = None,
+) -> dict[str, str]:
     logger.info("LLD stage: generate_report")
     analysis = state["architecture_analysis"]
     user_goal = _resolve_user_goal(context=context, state=state)
@@ -331,8 +341,8 @@ def generate_report(state: dict[str, str], context: Any = None) -> dict[str, str
 
     chunk_outputs: list[str] = []
     for idx, chunk in enumerate(analysis_chunks):
-        prompt = _goal_anchored_prompt(
-            REPORT_GENERATION_PROMPT.format(analysis=chunk),
+        prompt = REPORT_GENERATION_PROMPT.format(
+            analysis=chunk,
             user_goal=user_goal,
         )
         result = _run_task(prompt, context=context)
@@ -346,7 +356,10 @@ def generate_report(state: dict[str, str], context: Any = None) -> dict[str, str
     return {"final_report": output}
 
 
-def run_pipeline(lld_input: str, context: Any = None) -> dict[str, str]:
+def run_pipeline(
+    lld_input: str,
+    context: "AgentContext | None" = None,
+) -> dict[str, str]:
     logger.info("Starting LLD standalone pipeline")
     if context is not None and callable(getattr(context, "record", None)):
         context.record(agent_name="lld_agent", event="started", detail=str(lld_input)[:160])

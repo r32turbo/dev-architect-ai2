@@ -12,6 +12,9 @@ Task:
 2. Extract the most relevant architecture sections for that subject.
 3. If a section is missing, mark it as "Missing" and explain briefly.
 
+Original User Goal:
+{user_goal}
+
 Input Document:
 {document}
 
@@ -52,6 +55,9 @@ Analyze architectural quality using a domain-adaptive checklist:
 8. Observability and testability
 9. Deployment and operations readiness
 
+Original User Goal:
+{user_goal}
+
 Input Sections:
 {sections}
 
@@ -71,6 +77,9 @@ The LLD subject may belong to any software/system domain.
 
 Task:
 Generate a clear, actionable LLD review report.
+
+Original User Goal:
+{user_goal}
 
 Input Analysis:
 {analysis}

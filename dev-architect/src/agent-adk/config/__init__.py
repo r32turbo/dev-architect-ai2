@@ -1,6 +1,6 @@
 """Configuration sub-package."""
 
-from config.settings import (
+from reusableagents.config.settings import (
     AgentConfig,
     ExecutionMode,
     GeminiConfig,
