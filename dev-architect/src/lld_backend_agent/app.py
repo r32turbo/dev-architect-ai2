@@ -133,15 +133,12 @@ def main() -> None:
         if isinstance(response.output, str)
         else str(response.output)
     )
-
-    # ---------- Output ----------
-    print("\n" + "=" * 70)
-    print(" GENERATED BACKEND LLD ")
-    print("=" * 70 + "\n")
-    print(output)
-    print("\n" + "=" * 70)
-
-
+ # ---------- Output ----------
+    logger.info("=" * 70)
+    logger.info(" GENERATED BACKEND LLD ")
+    logger.info("=" * 70)
+    logger.info("\n%s\n", output)
+    logger.info("=" * 70)
 # ---------- Run ----------
 if __name__ == "__main__":
     main()

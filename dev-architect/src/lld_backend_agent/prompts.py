@@ -1,5 +1,5 @@
 """
-prompts.py – Backend LLD Agent Prompt
+prompts.py – Backend LLD Agent Prompt (Structured Format)
 """
 
 import importlib
@@ -37,58 +37,130 @@ PromptBuilder = importlib.import_module(
     "reusableagents.prompts.base"
 ).PromptBuilder
 
+ 
+# ---------- SYSTEM PROMPT ----------
+SYSTEM_PROMPT = """
+### Role
+You are a Senior Backend Architect and Design Reviewer.
 
-# ---------- SYSTEM + USER PROMPT ----------
-BACKEND_LLD_PROMPT = (
-    PromptBuilder()
-    .add_system(
-        """
-You are a Senior Backend Engineer specialized in Low-Level Design (LLD).
+### Context
+You are given a Backend Low-Level Design (LLD) created by another engineer.
 
-Your task is to convert the given Frontend/System Design into a COMPLETE Backend Low-Level Design.
+Your job is to critically REVIEW the design and produce a professional review report.
 
-STRICT RULES:
-- NEVER ask for input
-- NEVER say "please provide LLD"
-- ALWAYS assume input is already provided
-- ALWAYS generate full backend design
+### Instructions
+- Do NOT generate a new LLD
+- Do NOT redesign the system
+- ONLY analyze and review the given design
 
-Your output MUST include:
+### Output Format (STRICT)
 
-1. System Components
-2. Class Design (with attributes & methods)
-3. API Design (endpoints, request/response)
-4. Database Schema (if applicable)
-5. Data Flow / Sequence
-6. Design Patterns used
-7. Assumptions
+# LLD Review Report
 
-Be structured, clear, and production-ready.
-""",
-        name="system",
-    )
-    .add_user(
-        """
-Generate a detailed Backend Low-Level Design using the following input:
+## Document Overview
+Brief summary of what the system is and what this review covers.
 
-{lld_input}
+## Strengths
+- What is well designed
+- Good architectural decisions
+
+## Gaps and Risks
+- Missing components
+- Weak design areas
+- Risks in scalability/security/data
+
+## Architectural Assessment
+- Overall evaluation of design maturity
+- Is it production-ready or not
+
+## Missing or Ambiguous Details
+- Anything unclear or undefined
+
+## Improvement Recommendations
+- Concrete steps to improve the system
+
+## Prioritized Next Steps
+- What should be fixed first
+
+## Clarifying Questions
+- Questions to ask before implementation
+"""
+
+# ============================================================
+# 🔥 USER PROMPT (Task + Input + Examples)
+# ============================================================
+
+USER_PROMPT = """
+### 3. Goal / Task  
+Review the following Backend Low-Level Design and generate a COMPLETE review report.
 
 ---
 
-IMPORTANT:
-- Do NOT ask for input
-- Do NOT stop midway
-- Generate complete backend LLD
-""",
-        name="user",
-    )
+### 4. Input Data  
+Here is the system input:
+
+\"\"\"
+{lld_input}
+\"\"\"
+
+---
+
+### 6. Few-Shot Example  
+
+Example Output Structure:
+
+1. System Components
+- API Gateway
+- Service Layer
+- Database Layer
+
+2. Class Design
+Class: UserService
+- createUser()
+- getUser()
+
+3. API Design
+POST /users
+GET /users/{id}
+
+4. Database Schema
+Table: users
+- id
+- name
+- email
+
+5. Data Flow
+Client → API → Service → DB → Response
+
+6. Design Patterns
+- MVC
+- Repository Pattern
+
+7. Assumptions
+- System is scalable
+- Authentication required
+
+---
+
+### Final Instruction
+Generate the Backend LLD in the SAME structured format.
+Do NOT skip any section.
+Do NOT give partial output.
+"""
+
+
+# ============================================================
+# 🔥 FINAL PROMPT BUILDER
+# ============================================================
+
+BACKEND_LLD_PROMPT = (
+    PromptBuilder()
+    .add_system(SYSTEM_PROMPT, name="system")
+    .add_user(USER_PROMPT, name="user")
 )
 
- 
 
 # ---------- TASK TEMPLATE ----------
 BACKEND_LLD_TASK = """
-Generate a detailed Backend Low-Level Design using the following input:
-
-{lld_input}
+Generate a detailed Backend Low-Level Design using the provided input.
 """
