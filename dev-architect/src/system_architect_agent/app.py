@@ -1,154 +1,160 @@
-import os
-from openai import OpenAI
-from dotenv import load_dotenv
+"""
+app.py – Entry point for System Architecture Agent
 
-# Load .env variables
-load_dotenv()
+Run:
+    uv run app.py
+"""
 
-# Create Groq client
-client = OpenAI(
-    api_key=os.getenv("GROQ_API_KEY"),
-    base_url="https://api.groq.com/openai/v1"
+from __future__ import annotations
+
+import logging
+import importlib
+import sys
+import types
+from pathlib import Path
+
+from state import ARCH_INPUT
+from prompts import (
+    ARCHITECTURE_SYSTEM_PROMPT,
+    ARCHITECTURE_PROMPT,
+    ARCHITECTURE_TASK,
 )
 
-# ---------------------------------------------
-# SYSTEM ANALYST INPUT DOCUMENT (EMBEDDED)
-# ---------------------------------------------
 
-ANALYST_DOCUMENT = """
-# System Analyst Output Document
-## One-Page Marketing Website (Next.js)
+# ---------- Register agent-adk ----------
+def register_agent_adk():
+    if "reusableagents" in sys.modules:
+        return
 
-Description
+    base_path = Path(__file__).resolve()
 
-The objective is to build a simple one-page marketing website using Next.js.
+    possible_paths = [
+        base_path.parents[0] / "agent-adk",
+        base_path.parents[1] / "agent-adk",
+        base_path.parents[2] / "agent-adk",
+    ]
 
-The website will function as a digital landing page that introduces the business, explains services offered, and provides location and contact details.
+    for path in possible_paths:
+        if path.exists():
+            pkg = types.ModuleType("reusableagents")
+            pkg.__path__ = [str(path)]
+            sys.modules["reusableagents"] = pkg
+            return
 
-Website Sections
-
-- Hero Section
-- About Section
-- Services Section
-- Location / Contact Section
-
-Functional Requirements
-
-Hero Section
-- Headline
-- Subheadline
-- CTA button
-
-About Section
-- Company description
-
-Services Section
-- Minimum 3 services
-- Maximum 6 services
-
-Location / Contact Section
-- Address
-- Phone
-- Email
-- Google Map
-
-Content Source
-
-All content will be static.
-
-Non Functional Requirements
-
-- Fast loading
-- Responsive design
-- SEO optimized
-
-System Constraints
-
-- Next.js must be used
-- Single page layout
-
-Subsystem
-
-Website
-"""
+    raise ModuleNotFoundError("❌ agent-adk folder not found")
 
 
-# ---------------------------------------------
-# CREATE PROMPT
-# ---------------------------------------------
-
-def create_prompt(input_document):
-
-    prompt = f"""
-You are a System Architecture Agent.
-
-Analyze the provided System Analyst document and generate a System Architecture Document.
-
-The output must follow this structure:
-
-Title
-
-Description
-
-Architecture Type
-
-Subsystems
-
-* Subsystem 1
-
-Technology Details (with version numbers)
-
-* Technology 1
-* Technology 2
-* Technology 3
-
-Technical Constraints
-
-* Constraint 1
-* Constraint 2
-* Constraint 3
-
-System Analyst Document:
-
-{input_document}
-"""
-
-    return prompt
+register_agent_adk()
 
 
-# ---------------------------------------------
-# GENERATE ARCHITECTURE USING GROQ
-# ---------------------------------------------
+# ---------- Dynamic Imports ----------
+ReusableReActAgent = importlib.import_module(
+    "reusableagents.agents.react_agent"
+).ReusableReActAgent
 
-def generate_architecture(prompt):
+OutputValidator = importlib.import_module(
+    "reusableagents.agents.validator"
+).OutputValidator
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": "You are an expert system architect."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.3
+AgentConfig = importlib.import_module(
+    "reusableagents.config.settings"
+).AgentConfig
+
+GeminiConfig = importlib.import_module(
+    "reusableagents.config.settings"
+).GeminiConfig
+
+create_agent_llm = importlib.import_module(
+    "reusableagents.llm.gemini"
+).create_agent_llm
+
+create_validator_llm = importlib.import_module(
+    "reusableagents.llm.gemini"
+).create_validator_llm
+
+# ✅ IMPORTANT FIX
+PromptBuilder = importlib.import_module(
+    "reusableagents.prompts.base"
+).PromptBuilder
+
+
+# ---------- Logging ----------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s – %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+# ---------- Configure LLM ----------
+gemini_config = GeminiConfig(
+    project_id="eds-alchemy",
+    location="us-central1",
+    agent_model="gemini-2.5-flash-lite",
+    validator_model="gemini-2.5-flash-lite",
+    agent_temperature=0.2,
+    validator_temperature=0.0,
+)
+
+agent_llm = create_agent_llm(gemini_config)
+validator_llm = create_validator_llm(gemini_config)
+
+
+# ---------- Agent Config ----------
+agent_config = AgentConfig(
+    max_react_iterations=5,
+    enable_validation=True,
+    validation_score_threshold=0.7,
+    max_refinement_attempts=2,
+)
+
+validator = OutputValidator(
+    llm=validator_llm,
+    score_threshold=agent_config.validation_score_threshold,
+)
+
+# ✅ FIX: Wrap prompts properly
+prompt_builder = (
+    PromptBuilder()
+    .add_system(ARCHITECTURE_SYSTEM_PROMPT, name="system")
+    .add_user(ARCHITECTURE_PROMPT, name="user")
+)
+
+react_agent = ReusableReActAgent(
+    tools=[],
+    llm=agent_llm,
+    prompt_builder=prompt_builder,
+    validator=validator,
+    config=agent_config,
+)
+
+
+# ---------- Main ----------
+def main() -> None:
+
+    print("\n System Architecture Agent")
+    print("─" * 40)
+
+    task = ARCHITECTURE_TASK
+
+    response = react_agent.run(
+        task=task,
+        state={"architecture_input": ARCH_INPUT},
     )
 
-    return response.choices[0].message.content
+    output = (
+        response.output
+        if isinstance(response.output, str)
+        else str(response.output)
+    )
+
+    logger.info("=" * 70)
+    logger.info(" GENERATED SYSTEM ARCHITECTURE ")
+    logger.info("=" * 70)
+    logger.info("\n%s\n", output)
+    logger.info("=" * 70)
 
 
-# ---------------------------------------------
-# MAIN WORKFLOW
-# ---------------------------------------------
-
-def main():
-
-    print("Running System Architect Agent...\n")
-
-    prompt = create_prompt(ANALYST_DOCUMENT)
-
-    architecture = generate_architecture(prompt)
-
-    print("\n========== SYSTEM ARCHITECTURE OUTPUT ==========\n")
-    print(architecture)
-
-
+# ---------- Run ----------
 if __name__ == "__main__":
     main()
