@@ -1,8 +1,5 @@
 """
 app.py – Entry point for Backend LLD Agent
-
-Run:
-    uv run app.py
 """
 
 from __future__ import annotations
@@ -17,7 +14,7 @@ from state import LLD_INPUT
 from prompts import BACKEND_LLD_PROMPT, BACKEND_LLD_TASK
 
 
-# ---------- Register agent-adk (FIXED PATH) ----------
+# ---------- Register agent-adk ----------
 def register_agent_adk():
     if "reusableagents" in sys.modules:
         return
@@ -104,6 +101,8 @@ validator = OutputValidator(
     score_threshold=agent_config.validation_score_threshold,
 )
 
+
+# ---------- Agent ----------
 react_agent = ReusableReActAgent(
     tools=[],
     llm=agent_llm,
@@ -119,13 +118,12 @@ def main() -> None:
     print("\n Backend LLD Agent")
     print("─" * 40)
 
-    # ---------- Task ----------
     task = BACKEND_LLD_TASK
 
-    # 🔥 CRITICAL FIX: pass state (this was missing earlier)
+    # ✅ FIXED: Proper context passing
     response = react_agent.run(
         task=task,
-        state={"lld_input": LLD_INPUT}
+        lld_input=LLD_INPUT
     )
 
     output = (
@@ -133,12 +131,14 @@ def main() -> None:
         if isinstance(response.output, str)
         else str(response.output)
     )
- # ---------- Output ----------
+
     logger.info("=" * 70)
     logger.info(" GENERATED BACKEND LLD ")
     logger.info("=" * 70)
     logger.info("\n%s\n", output)
     logger.info("=" * 70)
+
+
 # ---------- Run ----------
 if __name__ == "__main__":
     main()
