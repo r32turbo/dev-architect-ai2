@@ -1,8 +1,5 @@
 """
-app.py – Entry point for Backend LLD Agent
-
-Run:
-    uv run app.py
+app.py – Backend LLD Agent (WITH CONTEXT SUPPORT)
 """
 
 from __future__ import annotations
@@ -12,12 +9,16 @@ import importlib
 import sys
 import types
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from state import LLD_INPUT
 from prompts import BACKEND_LLD_PROMPT, BACKEND_LLD_TASK
 
+if TYPE_CHECKING:
+    from reusableagents.context import AgentContext
 
-# ---------- Register agent-adk (FIXED PATH) ----------
+
+# ---------- Register agent-adk ----------
 def register_agent_adk():
     if "reusableagents" in sys.modules:
         return
@@ -68,6 +69,10 @@ create_validator_llm = importlib.import_module(
     "reusableagents.llm.gemini"
 ).create_validator_llm
 
+AgentContext = importlib.import_module(
+    "reusableagents.context"
+).AgentContext
+
 
 # ---------- Logging ----------
 logging.basicConfig(
@@ -77,68 +82,101 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ---------- Configure LLM ----------
-gemini_config = GeminiConfig(
-    project_id="eds-alchemy",
-    location="us-central1",
-    agent_model="gemini-2.5-flash-lite",
-    validator_model="gemini-2.5-flash-lite",
-    agent_temperature=0.0,
-    validator_temperature=0.0,
-)
-
-agent_llm = create_agent_llm(gemini_config)
-validator_llm = create_validator_llm(gemini_config)
-
-
-# ---------- Agent Config ----------
-agent_config = AgentConfig(
-    max_react_iterations=5,
-    enable_validation=True,
-    validation_score_threshold=0.7,
-    max_refinement_attempts=2,
-)
-
-validator = OutputValidator(
-    llm=validator_llm,
-    score_threshold=agent_config.validation_score_threshold,
-)
-
-react_agent = ReusableReActAgent(
-    tools=[],
-    llm=agent_llm,
-    prompt_builder=BACKEND_LLD_PROMPT,
-    validator=validator,
-    config=agent_config,
-)
-
-
-# ---------- Main ----------
-def main() -> None:
-
-    print("\n Backend LLD Agent")
-    print("─" * 40)
-
-    # ---------- Task ----------
-    task = BACKEND_LLD_TASK
-
-    # 🔥 CRITICAL FIX: pass state (this was missing earlier)
-    response = react_agent.run(
-        task=task,
-        state={"lld_input": LLD_INPUT}
+# ---------- Build Agent ----------
+def build_agent(context: "AgentContext | None" = None):
+    gemini_config = GeminiConfig(
+        project_id="eds-alchemy",
+        location="us-central1",
+        agent_model="gemini-2.5-flash-lite",
+        validator_model="gemini-2.5-flash-lite",
+        agent_temperature=0.0,
+        validator_temperature=0.0,
     )
 
-    output = (
-        response.output
-        if isinstance(response.output, str)
-        else str(response.output)
+    agent_llm = create_agent_llm(gemini_config)
+    validator_llm = create_validator_llm(gemini_config)
+
+    validator = OutputValidator(llm=validator_llm)
+
+    return ReusableReActAgent(
+        tools=[],
+        llm=agent_llm,
+        prompt_builder=BACKEND_LLD_PROMPT,
+        validator=validator,
+        config=AgentConfig(
+            max_react_iterations=5,
+            enable_validation=True,
+            validation_score_threshold=0.7,
+            max_refinement_attempts=2,
+        ),
     )
- # ---------- Output ----------
+
+
+# ---------- RUN FUNCTION (LIKE FRIEND) ----------
+def run_backend_lld(
+    lld_input: str | None = None,
+    context: "AgentContext | None" = None,
+) -> str:
+
+    agent = build_agent(context)
+
+    # Resolve input
+    if lld_input:
+        resolved_input = lld_input
+    elif context and isinstance(context.state, dict):
+        resolved_input = context.state.get("lld_input", "")
+    else:
+        resolved_input = ""
+
+    if not resolved_input:
+        raise ValueError("LLD input is required")
+
+    # Record start
+    if context:
+        context.record(
+            agent_name="backend_lld_agent",
+            event="started",
+        )
+
+    # Run agent
+    response = agent.run(
+        task=BACKEND_LLD_TASK,
+        lld_input=resolved_input,
+        context=context,   # 🔥 THIS IS KEY
+    )
+
+    output = response.output if hasattr(response, "output") else response
+
+    # Save output in context
+    if context:
+        context.set_state("backend_lld.output", output)
+        context.record(
+            agent_name="backend_lld_agent",
+            event="completed",
+        )
+
+    return output
+
+
+# ---------- MAIN ----------
+def main():
+    logger.info("Starting Backend LLD Agent")
+
+    # 🔥 CREATE CONTEXT
+    context = AgentContext()
+
+    # 🔥 STORE INPUT IN CONTEXT
+    context.set_state("lld_input", LLD_INPUT)
+
+    output = run_backend_lld(context=context)
+
     logger.info("=" * 70)
     logger.info(" GENERATED BACKEND LLD ")
     logger.info("=" * 70)
     logger.info("\n%s\n", output)
     logger.info("=" * 70)
-# ---------- Run ----------
+
+
+# ---------- RUN ----------
 if __name__ == "__main__":
     main()
