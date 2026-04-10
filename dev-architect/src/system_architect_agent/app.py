@@ -1,160 +1,195 @@
 """
-app.py – Entry point for System Architecture Agent
-
-Run:
-    uv run app.py
+system_architect.py – System Architecture Agent (STRICT HLD MODE)
 """
 
 from __future__ import annotations
 
-import logging
-import importlib
+import os
 import sys
 import types
+import importlib
+import logging
+import warnings
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from state import ARCH_INPUT
-from prompts import (
-    ARCHITECTURE_SYSTEM_PROMPT,
-    ARCHITECTURE_PROMPT,
-    ARCHITECTURE_TASK,
+from dotenv import load_dotenv
+
+# Add current directory to sys.path for direct script execution
+import sys
+sys.path.append(os.path.dirname(__file__))
+
+# ✅ IMPORT STATE
+try:
+    from .state import ArchitectState
+except ImportError:
+    from state import ArchitectState
+
+if TYPE_CHECKING:
+    from reusableagents.context import AgentContext  # type: ignore
+
+try:
+    from .prompts import create_prompt
+except ImportError:
+    from prompts import create_prompt
+
+warnings.filterwarnings(
+    "ignore",
+    message=r".*deprecated.*",
+    category=Warning,
 )
 
+ADK_ROOT = Path(__file__).resolve().parents[1] / "agent-adk"
+if str(ADK_ROOT) not in sys.path:
+    sys.path.insert(0, str(ADK_ROOT))
 
-# ---------- Register agent-adk ----------
-def register_agent_adk():
-    if "reusableagents" in sys.modules:
-        return
+if "reusableagents" not in sys.modules:
+    reusableagents_pkg = types.ModuleType("reusableagents")
+    reusableagents_pkg.__path__ = [str(ADK_ROOT)]
+    sys.modules["reusableagents"] = reusableagents_pkg
 
-    base_path = Path(__file__).resolve()
-
-    possible_paths = [
-        base_path.parents[0] / "agent-adk",
-        base_path.parents[1] / "agent-adk",
-        base_path.parents[2] / "agent-adk",
-    ]
-
-    for path in possible_paths:
-        if path.exists():
-            pkg = types.ModuleType("reusableagents")
-            pkg.__path__ = [str(path)]
-            sys.modules["reusableagents"] = pkg
-            return
-
-    raise ModuleNotFoundError("❌ agent-adk folder not found")
-
-
-register_agent_adk()
-
-
-# ---------- Dynamic Imports ----------
-ReusableReActAgent = importlib.import_module(
-    "reusableagents.agents.react_agent"
-).ReusableReActAgent
-
-OutputValidator = importlib.import_module(
-    "reusableagents.agents.validator"
-).OutputValidator
-
-AgentConfig = importlib.import_module(
-    "reusableagents.config.settings"
-).AgentConfig
-
-GeminiConfig = importlib.import_module(
-    "reusableagents.config.settings"
-).GeminiConfig
-
-create_agent_llm = importlib.import_module(
-    "reusableagents.llm.gemini"
-).create_agent_llm
-
-create_validator_llm = importlib.import_module(
-    "reusableagents.llm.gemini"
-).create_validator_llm
-
-# ✅ IMPORTANT FIX
-PromptBuilder = importlib.import_module(
-    "reusableagents.prompts.base"
-).PromptBuilder
-
-
-# ---------- Logging ----------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s – %(message)s",
-)
 logger = logging.getLogger(__name__)
 
+# ---------------- LOAD ADK ----------------
+def load_adk_components():
+    react_mod = importlib.import_module("reusableagents.agents.react_agent")
+    prompts_mod = importlib.import_module("reusableagents.prompts.base")
+    config_mod = importlib.import_module("reusableagents.config.settings")
+    validator_mod = importlib.import_module("reusableagents.agents.validator")
+    llm_mod = importlib.import_module("reusableagents.llm.gemini")
 
-# ---------- Configure LLM ----------
-gemini_config = GeminiConfig(
-    project_id="eds-alchemy",
-    location="us-central1",
-    agent_model="gemini-2.5-flash-lite",
-    validator_model="gemini-2.5-flash-lite",
-    agent_temperature=0.2,
-    validator_temperature=0.0,
-)
-
-agent_llm = create_agent_llm(gemini_config)
-validator_llm = create_validator_llm(gemini_config)
-
-
-# ---------- Agent Config ----------
-agent_config = AgentConfig(
-    max_react_iterations=5,
-    enable_validation=True,
-    validation_score_threshold=0.7,
-    max_refinement_attempts=2,
-)
-
-validator = OutputValidator(
-    llm=validator_llm,
-    score_threshold=agent_config.validation_score_threshold,
-)
-
-# ✅ FIX: Wrap prompts properly
-prompt_builder = (
-    PromptBuilder()
-    .add_system(ARCHITECTURE_SYSTEM_PROMPT, name="system")
-    .add_user(ARCHITECTURE_PROMPT, name="user")
-)
-
-react_agent = ReusableReActAgent(
-    tools=[],
-    llm=agent_llm,
-    prompt_builder=prompt_builder,
-    validator=validator,
-    config=agent_config,
-)
-
-
-# ---------- Main ----------
-def main() -> None:
-
-    print("\n System Architecture Agent")
-    print("─" * 40)
-
-    task = ARCHITECTURE_TASK
-
-    response = react_agent.run(
-        task=task,
-        state={"architecture_input": ARCH_INPUT},
+    return (
+        react_mod.ReusableReActAgent,
+        prompts_mod.PromptBuilder,
+        config_mod.AgentConfig,
+        validator_mod.OutputValidator,
+        config_mod.GeminiConfig,
+        llm_mod.create_agent_llm,
+        llm_mod.create_validator_llm,
     )
 
-    output = (
-        response.output
-        if isinstance(response.output, str)
-        else str(response.output)
+# ---------------- ENV ----------------
+def load_environment():
+    for path in [Path.cwd(), *Path.cwd().parents]:
+        env_file = path / ".env"
+        if env_file.exists():
+            load_dotenv(env_file)
+            break
+
+# ---------------- BUILD AGENT ----------------
+def build_agent(context: "AgentContext | None" = None):
+    (
+        ReusableReActAgent,
+        PromptBuilder,
+        AgentConfig,
+        OutputValidator,
+        GeminiConfig,
+        create_agent_llm,
+        create_validator_llm,
+    ) = load_adk_components()
+
+    gemini_config = GeminiConfig(
+        project_id=os.getenv("GOOGLE_CLOUD_PROJECT", "eds-alchemy"),
+        location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+        agent_model=os.getenv("GEMINI_AGENT_MODEL", "gemini-2.5-flash-lite"),
+        validator_model=os.getenv("GEMINI_VALIDATOR_MODEL", "gemini-2.5-flash-lite"),
+        agent_temperature=0.0,
+        validator_temperature=0.0,
     )
 
-    logger.info("=" * 70)
-    logger.info(" GENERATED SYSTEM ARCHITECTURE ")
-    logger.info("=" * 70)
-    logger.info("\n%s\n", output)
-    logger.info("=" * 70)
+    agent_llm = create_agent_llm(gemini_config)
+    validator_llm = create_validator_llm(gemini_config)
+
+    validator = OutputValidator(llm=validator_llm)
+
+    prompt_builder = (
+        PromptBuilder()
+        .add_system(create_prompt("{input_document}"))
+        .add_user("Generate the architecture document.")
+    )
+
+    return ReusableReActAgent(
+        tools=[],
+        llm=agent_llm,
+        prompt_builder=prompt_builder,
+        validator=validator,
+        config=AgentConfig(
+            max_react_iterations=5,
+            enable_validation=False,
+            max_refinement_attempts=2,
+        ),
+    )
+
+# ---------------- NORMALIZATION ----------------
+def normalize_output(text: str) -> str:
+    return str(text or "").strip()
+
+# ---------------- MAIN EXECUTION ----------------
+def run_system_architect(
+    input_document: str | None = None,
+    context: "AgentContext | None" = None,
+) -> str:
+    load_environment()
+
+    agent = build_agent(context)
+
+    # ✅ FETCH FROM STATE IF INPUT NOT PROVIDED
+    if not str(input_document or "").strip():
+        state = ArchitectState()
+        input_document = state.get_input()
+
+    if not str(input_document or "").strip():
+        raise ValueError("input_document is required")
+
+    if context and callable(getattr(context, "record", None)):
+        context.record(
+            agent_name="system_architect_agent",
+            event="started",
+            detail=str(input_document)[:150],
+        )
+
+    result = agent.run(
+        input_document=input_document,
+        context=context if context else None
+    )
+
+    output = normalize_output(
+        result.output if hasattr(result, "output") else result
+    )
+
+    # ✅ SAVE OUTPUT TO STATE ALSO
+    state = ArchitectState()
+    state.set_output(output)
+
+    if context and callable(getattr(context, "set_state", None)):
+        context.set_state("system_architect.output", output)
+
+    if context and callable(getattr(context, "record", None)):
+        context.record(
+            agent_name="system_architect_agent",
+            event="completed"
+        )
+
+    return output
+
+# ---------------- MAIN ----------------
+def main():
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+
+    logger.info("Starting System Architect Agent")
 
 
-# ---------- Run ----------
+    # ✅ NO NEED TO PASS INPUT NOW
+    output = run_system_architect()
+
+    if output:
+        print("\n========== SYSTEM ARCHITECTURE OUTPUT ==========\n")
+        print(output)
+    else:
+        print("No output generated.")
+
 if __name__ == "__main__":
     main()
