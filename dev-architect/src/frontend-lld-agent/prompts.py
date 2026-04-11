@@ -1,3 +1,15 @@
+"""
+prompts.py
+PromptBuilder for the Frontend LLD Agent.
+
+Prompt structure:
+  WHO   - role/persona of the agent
+  WHAT  - the task it must perform
+  WHY   - context and purpose
+  HOW   - desired output format (matches the LLD sample document exactly)
+  RULES - constraints and boundaries
+  WITH  - input data (user section, dynamic)
+"""
 import importlib
 from configuration import register_agent_adk
 
@@ -62,10 +74,10 @@ FRONTEND_LLD_PROMPT = (
         "  - Footer Component\n\n"
         "#### Prop Definitions (TypeScript Interfaces)\n"
         "Write TypeScript interfaces in a code block for:\n"
-        "- NavItem: {{ label: string; href: string }}\n"
-        "- ServiceCardProps: {{ title: string; description: string; icon?: string }}\n"
-        "- ContactProps: {{ address: string; phone: string; email: string; "
-        "socialLinks: {{ platform: string; url: string }}[] }}\n\n"
+        "- NavItem: { label: string; href: string }\n"
+        "- ServiceCardProps: { title: string; description: string; icon?: string }\n"
+        "- ContactProps: { address: string; phone: string; email: string; "
+        "socialLinks: { platform: string; url: string }[] }\n\n"
         "#### State Management\n"
         "- Mobile Menu State: isMenuOpen boolean in Navbar.\n"
         "- Scroll Observer: useActiveSection custom hook using Intersection Observer API.\n\n"
@@ -86,7 +98,7 @@ FRONTEND_LLD_PROMPT = (
         "- Offset Handling: JavaScript scroll calculation for fixed Navbar height.\n\n"
         "#### Performance Optimization\n"
         "- Next.js Image (next/image):\n"
-        "  - Hero Image: priority={{true}} to improve LCP.\n"
+        "  - Hero Image: priority={true} to improve LCP.\n"
         "  - Service Icons: width and height attributes to prevent CLS.\n"
         "- Static Generation: SSG pre-renders the entire page at build time.\n\n"
         "---\n\n"
@@ -98,7 +110,7 @@ FRONTEND_LLD_PROMPT = (
         "#### Internal API Routes\n"
         "- Contact Form (Optional): Next.js Route Handler at /api/contact.\n"
         "  - Method: POST\n"
-        "  - Request Body: {{ name: string, email: string, message: string }}\n\n"
+        "  - Request Body: { name: string, email: string, message: string }\n\n"
         "---\n\n"
         "### 5. Visual & Styling System\n\n"
         "State that Tailwind CSS 4.0 is used for mobile-first responsive design.\n\n"

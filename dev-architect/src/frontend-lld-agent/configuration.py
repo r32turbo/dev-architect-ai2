@@ -1,3 +1,8 @@
+"""
+configuration.py
+Registers agent-adk as reusableagents and patches the broken
+create_agent import in react_agent.py at runtime.
+"""
 import sys
 import types
 import importlib
