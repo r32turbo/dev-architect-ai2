@@ -1,0 +1,275 @@
+"""
+system_architect.py – System Architecture Agent (STRICT HLD MODE)
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import types
+import importlib
+import logging
+import warnings
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from dotenv import load_dotenv
+
+# ✅ IMPORT STATE
+try:
+    from .state import ArchitectState
+except ImportError:
+    from state import ArchitectState
+
+if TYPE_CHECKING:
+    from reusableagents.context import AgentContext  # type: ignore
+
+# Define the system prompt
+SYSTEM_ARCHITECT_PROMPT = """
+You are a System Architecture Agent responsible for generating a High-Level Design (HLD) document.
+
+STRICT INSTRUCTIONS:
+- Output MUST be in the exact format given below.
+- DO NOT skip any section.
+- DO NOT add extra sections.
+- DO NOT include placeholders like "appears to be".
+- Use clear, professional, and complete statements.
+- Replace generic examples with actual system-specific details based on the input.
+- Maintain proper headings, numbering, and formatting exactly as shown.
+
+OUTPUT FORMAT:
+
+# System Architecture Report
+
+## 1. System Overview
+Provide a brief and clear description of the system, including its purpose and target users.
+
+## 2. Functional Requirements
+List all core functionalities of the system as bullet points.
+
+## 3. Non-Functional Requirements
+Specify performance, scalability, reliability, and security requirements.
+
+## 4. High-Level Architecture
+Describe the overall system structure including:
+- Client (Web/Mobile)
+- Backend Services
+- Database
+- External APIs
+Also specify whether the system follows Monolithic or Microservices architecture.
+
+## 5. System Components
+
+### 5.1 Frontend
+- Technology used
+- Responsibilities:
+  - UI rendering
+  - API communication
+
+### 5.2 Backend
+- Technology used
+- Responsibilities:
+  - Business logic
+  - Authentication
+  - API handling
+
+### 5.3 Database
+- Type (SQL/NoSQL)
+- Data stored:
+  - Users
+  - Transactions
+  - Logs
+
+### 5.4 APIs
+- Type (REST/GraphQL)
+- Purpose and usage
+
+## 6. Data Flow
+Provide step-by-step flow of how data moves through the system:
+1. User sends request
+2. API Gateway receives request
+3. Backend processes logic
+4. Database interaction
+5. Response returned to user
+
+## 7. Technology Stack
+- Frontend:
+- Backend:
+- Database:
+- Cloud/Hosting:
+
+## 8. Scalability Considerations
+- Load balancing
+- Horizontal scaling
+- Caching mechanisms (e.g., Redis)
+
+## 9. Security Considerations
+- Authentication (JWT/OAuth)
+- Data encryption
+- API security
+
+## 10. Deployment Architecture
+- Cloud infrastructure
+- Containerization (Docker)
+- CI/CD pipelines
+"""
+
+warnings.filterwarnings(
+    "ignore",
+    message=r".*deprecated.*",
+    category=Warning,
+)
+
+ADK_ROOT = Path(__file__).resolve().parents[1] / "agent-adk"
+if str(ADK_ROOT) not in sys.path:
+    sys.path.insert(0, str(ADK_ROOT))
+
+if "reusableagents" not in sys.modules:
+    reusableagents_pkg = types.ModuleType("reusableagents")
+    reusableagents_pkg.__path__ = [str(ADK_ROOT)]
+    sys.modules["reusableagents"] = reusableagents_pkg
+
+logger = logging.getLogger(__name__)
+
+# ---------------- LOAD ADK ----------------
+def load_adk_components():
+    react_mod = importlib.import_module("reusableagents.agents.react_agent")
+    prompts_mod = importlib.import_module("reusableagents.prompts.base")
+    config_mod = importlib.import_module("reusableagents.config.settings")
+    validator_mod = importlib.import_module("reusableagents.agents.validator")
+    llm_mod = importlib.import_module("reusableagents.llm.gemini")
+
+    return (
+        react_mod.ReusableReActAgent,
+        prompts_mod.PromptBuilder,
+        config_mod.AgentConfig,
+        validator_mod.OutputValidator,
+        config_mod.GeminiConfig,
+        llm_mod.create_agent_llm,
+        llm_mod.create_validator_llm,
+    )
+
+# ---------------- ENV ----------------
+def load_environment():
+    for path in [Path.cwd(), *Path.cwd().parents]:
+        env_file = path / ".env"
+        if env_file.exists():
+            load_dotenv(env_file)
+            break
+
+# ---------------- BUILD AGENT ----------------
+def build_agent(context: "AgentContext | None" = None):
+    (
+        ReusableReActAgent,
+        PromptBuilder,
+        AgentConfig,
+        OutputValidator,
+        GeminiConfig,
+        create_agent_llm,
+        create_validator_llm,
+    ) = load_adk_components()
+
+    gemini_config = GeminiConfig(
+        project_id=os.getenv("GOOGLE_CLOUD_PROJECT", "eds-alchemy"),
+        location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+        agent_model=os.getenv("GEMINI_AGENT_MODEL", "gemini-2.5-flash-lite"),
+        validator_model=os.getenv("GEMINI_VALIDATOR_MODEL", "gemini-2.5-flash-lite"),
+        agent_temperature=0.0,
+        validator_temperature=0.0,
+    )
+
+    agent_llm = create_agent_llm(gemini_config)
+    validator_llm = create_validator_llm(gemini_config)
+
+    validator = OutputValidator(llm=validator_llm)
+
+    prompt_builder = (
+        PromptBuilder()
+        .add_system(SYSTEM_ARCHITECT_PROMPT)
+        .add_user("System Analyst Document:\n\n{input_document}")
+    )
+
+    return ReusableReActAgent(
+        tools=[],
+        llm=agent_llm,
+        prompt_builder=prompt_builder,
+        validator=validator,
+        config=AgentConfig(
+            max_react_iterations=5,
+            enable_validation=False,
+            max_refinement_attempts=2,
+        ),
+    )
+
+# ---------------- NORMALIZATION ----------------
+def normalize_output(text: str) -> str:
+    return str(text or "").strip()
+
+# ---------------- MAIN EXECUTION ----------------
+def run_system_architect(
+    input_document: str | None = None,
+    context: "AgentContext | None" = None,
+) -> str:
+    load_environment()
+
+    agent = build_agent(context)
+
+    # ✅ FETCH FROM STATE IF INPUT NOT PROVIDED
+    if not str(input_document or "").strip():
+        state = ArchitectState()
+        input_document = state.get_input()
+
+    if not str(input_document or "").strip():
+        raise ValueError("input_document is required")
+
+    if context and callable(getattr(context, "record", None)):
+        context.record(
+            agent_name="system_architect_agent",
+            event="started",
+            detail=str(input_document)[:150],
+        )
+
+    result = agent.run(
+        input_document=input_document,
+        context=context if context else None
+    )
+
+    output = normalize_output(
+        result.output if hasattr(result, "output") else result
+    )
+
+    # ✅ SAVE OUTPUT TO STATE ALSO
+    state = ArchitectState()
+    state.set_output(output)
+
+    if context and callable(getattr(context, "set_state", None)):
+        context.set_state("system_architect.output", output)
+
+    if context and callable(getattr(context, "record", None)):
+        context.record(
+            agent_name="system_architect_agent",
+            event="completed"
+        )
+
+    return output
+
+# ---------------- MAIN ----------------
+def main():
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+
+    logger.info("Starting System Architect Agent")
+
+    # ✅ NO NEED TO PASS INPUT NOW
+    output = run_system_architect()
+
+    if output:
+        print("\n========== SYSTEM ARCHITECTURE OUTPUT ==========\n")
+        print(output)
+    else:
+        print("No output generated.")
+
+if __name__ == "__main__":
+    main()

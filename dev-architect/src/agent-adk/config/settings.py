@@ -45,17 +45,17 @@ class GeminiConfig(BaseModel):
         description="GCP project ID that owns the Vertex AI endpoint.",
     )
     location: str = Field(
-        default="asia-south2",
+        default="us-central1",
         min_length=1,
         description="GCP region used for Vertex AI inference.",
     )
     agent_model: str = Field(
-        default="gemini-2.5-pro",
+        default="gemini-1.5-flash",
         min_length=1,
         description="Model name for the primary ReAct agent.",
     )
     validator_model: str = Field(
-        default="gemini-2.5-pro",
+        default="gemini-1.5-flash",
         min_length=1,
         description="Model name used for output validation and refinement.",
     )

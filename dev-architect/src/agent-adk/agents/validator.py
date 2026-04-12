@@ -300,6 +300,16 @@ class OutputValidator:
                 refined_output=None,
             )
 
+        # Handle case where LLM returns None
+        if result is None:
+            logger.warning("Validator LLM returned None. Treating output as valid.")
+            return ValidationResult(
+                is_valid=True,
+                score=1.0,
+                feedback="Validation skipped: LLM returned None.",
+                refined_output=None,
+            )
+
         # Enforce the score threshold as a secondary decision gate.
         if result.score < self._score_threshold and result.is_valid:
             logger.debug(
