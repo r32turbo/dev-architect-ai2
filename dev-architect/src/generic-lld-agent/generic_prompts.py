@@ -11,10 +11,8 @@ A good prompt answers:
   RULES - constraints and boundaries
 """
 import importlib
-from configuration import register_agent_adk
 
-register_agent_adk()
-
+# register_agent_adk() is already called in graph.py before this file loads
 PromptBuilder = importlib.import_module("reusableagents.prompts.base").PromptBuilder
 
 
