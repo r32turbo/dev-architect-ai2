@@ -59,6 +59,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from reusableagents.agents.react_agent import AgentResponse
 from reusableagents.agents.validator import OutputValidator
 from reusableagents.config.settings import ExecutionMode, SupervisorConfig
+from reusableagents.context import AgentContext
 from reusableagents.prompts.base import PromptBuilder
 
 logger = logging.getLogger(__name__)
@@ -245,6 +246,14 @@ class SupervisorAgent:
         Optional :class:`~reusableagents.agents.validator.OutputValidator` that
         reviews the supervisor's final synthesized answer.  Requires
         ``config.enable_validation=True`` to take effect.
+    context:
+        An optional :class:`~reusableagents.context.AgentContext` carrying
+        session metadata, authentication / authorisation info, and shared
+        mutable state.  When ``None``, the supervisor creates a fresh context
+        automatically on the first ``run()`` call.  The same context is
+        forwarded to every worker agent so that state is shared across the
+        entire pipeline.  A context may also be passed at ``run()`` time via
+        the ``context`` keyword argument (which takes precedence).
 
     Examples
     --------
@@ -289,6 +298,7 @@ class SupervisorAgent:
         config: Optional[SupervisorConfig] = None,
         validator: Optional[OutputValidator] = None,
         extra_tools: Sequence[BaseTool] = (),
+        context: Optional[AgentContext] = None,
     ) -> None:
         # ------------------------------------------------------------------
         # Validate constructor arguments eagerly.
@@ -349,6 +359,11 @@ class SupervisorAgent:
                 "'dispatch_parallel' is a reserved tool name and "
                 "cannot be used in extra_tools."
             )
+        if context is not None and not isinstance(context, AgentContext):
+            raise TypeError(
+                f"context must be an AgentContext instance or None, "
+                f"got {type(context).__name__!r}"
+            )
         # ------------------------------------------------------------------
         self.workers = _workers
         self.llm = llm
@@ -356,6 +371,7 @@ class SupervisorAgent:
         self.config = config or SupervisorConfig()
         self.validator = validator
         self.extra_tools = _extra_tools
+        self.context: Optional[AgentContext] = context
 
         # Build a name → spec lookup for efficient access inside tool closures.
         self._worker_map: Dict[str, WorkerSpec] = {w.name: w for w in self.workers}
@@ -377,25 +393,56 @@ class SupervisorAgent:
             Variables substituted into the supervisor's
             :class:`~reusableagents.prompts.base.PromptBuilder` template.
 
+            A special ``context`` keyword may be passed to supply an
+            :class:`~reusableagents.context.AgentContext`.  If neither
+            the constructor nor ``run()`` receives a context, one is
+            created automatically.  The same context is forwarded to
+            every worker agent call so state is shared across the
+            pipeline.
+
         Returns
         -------
         AgentResponse
             The final (possibly validated / refined) answer with metadata.
         """
+        # --- resolve context (run-time > constructor > auto-create) ---
+        ctx = prompt_variables.pop("context", None)
+        if ctx is not None and not isinstance(ctx, AgentContext):
+            raise TypeError(
+                f"context must be an AgentContext instance or None, "
+                f"got {type(ctx).__name__!r}"
+            )
+        if ctx is None:
+            ctx = self.context
+        if ctx is None:
+            ctx = AgentContext()
+            logger.debug("Auto-created AgentContext (session=%s)", ctx.session.session_id)
+        self.context = ctx
+
+        ctx.record("SupervisorAgent", "started")
+
         system_prompt = self._build_full_system_prompt(**prompt_variables)
         user_message = self.prompt_builder.render_user(**prompt_variables)
 
         output, messages = self._invoke_supervisor(system_prompt, user_message)
 
         if self.validator and self.config.enable_validation:
-            return self._validate_and_refine(
+            response = self._validate_and_refine(
                 system_prompt=system_prompt,
                 original_input=user_message,
                 agent_output=output,
                 raw_messages=messages,
             )
+        else:
+            response = AgentResponse(output=output, raw_messages=messages)
 
-        return AgentResponse(output=output, raw_messages=messages)
+        ctx.record(
+            "SupervisorAgent",
+            "completed",
+            detail=str(response.output)[:200] if response.output else None,
+        )
+
+        return response
 
     def as_worker(
         self,
@@ -514,17 +561,20 @@ class SupervisorAgent:
     def _make_worker_tool(self, spec: WorkerSpec) -> StructuredTool:
         """Wrap a :class:`WorkerSpec` as a single-task ``StructuredTool``."""
 
-        # Capture spec in the default argument to avoid late-binding issues.
+        # Capture spec and self in the default argument to avoid late-binding issues.
+        supervisor_ref = self
+
         def _run(task: str, _spec: WorkerSpec = spec) -> str:
             logger.info(
                 "Supervisor → worker %r | task: %.150s",
                 _spec.name, task,
             )
             try:
-                response: AgentResponse = _spec.agent.run(
-                    **_spec.bound_variables,
-                    **{_spec.task_variable: task},
-                )
+                call_kwargs = {**_spec.bound_variables, _spec.task_variable: task}
+                # Forward the supervisor's context to the worker agent.
+                if supervisor_ref.context is not None:
+                    call_kwargs["context"] = supervisor_ref.context
+                response: AgentResponse = _spec.agent.run(**call_kwargs)
                 score_str = (
                     f"{response.validation_score:.2f}"
                     if response.validation_score is not None
@@ -569,6 +619,7 @@ class SupervisorAgent:
         worker_map = self._worker_map
         max_workers = self.config.max_parallel_workers
         available_names = list(worker_map.keys())
+        supervisor_ref = self
 
         def _dispatch(tasks: List[_WorkerTask]) -> str:
             # Validate all worker names before spawning threads.
@@ -590,6 +641,7 @@ class SupervisorAgent:
                         _call_worker,
                         worker_map[wt.worker_name],
                         wt.task,
+                        supervisor_ref.context,
                     ): wt.worker_name
                     for wt in tasks
                 }
@@ -772,19 +824,28 @@ class SupervisorAgent:
 # ---------------------------------------------------------------------------
 
 
-def _call_worker(spec: WorkerSpec, task: str) -> str:
+def _call_worker(spec: WorkerSpec, task: str, context: Optional[AgentContext] = None) -> str:
     """
     Invoke a worker agent and return its output string.
 
     Used as the callable submitted to :class:`concurrent.futures.ThreadPoolExecutor`
     by the ``dispatch_parallel`` tool.  Any exception propagates back to the
     caller so that ``as_completed`` can capture and log it.
+
+    Parameters
+    ----------
+    spec:
+        The worker specification.
+    task:
+        The task string to pass to the worker.
+    context:
+        Optional :class:`AgentContext` forwarded to the worker's ``run()``.
     """
     logger.info("Parallel dispatch → worker %r | task: %.150s", spec.name, task)
-    response: AgentResponse = spec.agent.run(
-        **spec.bound_variables,
-        **{spec.task_variable: task},
-    )
+    call_kwargs: Dict[str, Any] = {**spec.bound_variables, spec.task_variable: task}
+    if context is not None:
+        call_kwargs["context"] = context
+    response: AgentResponse = spec.agent.run(**call_kwargs)
     _out = response.output
     if isinstance(_out, BaseModel):
         return _out.model_dump_json(indent=2)

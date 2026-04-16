@@ -41,6 +41,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from reusableagents.agents.validator import OutputValidator
 from reusableagents.config.settings import AgentConfig
+from reusableagents.context import AgentContext
 from reusableagents.prompts.base import PromptBuilder
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,16 @@ class ReusableReActAgent:
         is stored in :attr:`AgentResponse.output` instead of the raw string.
         Validation and refinement, when enabled, still operate on the
         intermediate text before the structured-extraction step.
+    context:
+        An optional :class:`~reusableagents.context.AgentContext` instance
+        carrying session metadata, authentication / authorisation info, and
+        shared mutable state.  When ``None``, the agent creates a fresh
+        context automatically on the first ``run()`` call.  In a multi-agent
+        pipeline the :class:`~reusableagents.agents.supervisor.SupervisorAgent`
+        passes the same context to every worker so they can share state.
+        A context may also be supplied at ``run()`` time via the special
+        ``context`` keyword argument (which takes precedence over the
+        constructor-level value).
 
     Examples
     --------
@@ -204,6 +215,7 @@ class ReusableReActAgent:
         validator: Optional[OutputValidator] = None,
         config: Optional[AgentConfig] = None,
         output_schema: Optional[Type[BaseModel]] = None,
+        context: Optional[AgentContext] = None,
     ) -> None:
         # ------------------------------------------------------------------
         # Validate all constructor arguments eagerly so that misconfiguration
@@ -246,6 +258,11 @@ class ReusableReActAgent:
                 f"(pass the class itself, not an instance); "
                 f"got {type(output_schema).__name__!r}"
             )
+        if context is not None and not isinstance(context, AgentContext):
+            raise TypeError(
+                f"context must be an AgentContext instance or None, "
+                f"got {type(context).__name__!r}"
+            )
         # ------------------------------------------------------------------
         self.tools = _tools
         self.llm = llm
@@ -253,6 +270,7 @@ class ReusableReActAgent:
         self.validator = validator
         self.config = config or AgentConfig()
         self.output_schema: Optional[Type[BaseModel]] = output_schema
+        self.context: Optional[AgentContext] = context
 
     # ------------------------------------------------------------------
     # Public API
@@ -269,6 +287,11 @@ class ReusableReActAgent:
             Must supply values for every ``{variable}`` used in the
             :class:`~reusableagents.prompts.base.PromptBuilder`.
 
+            A special ``context`` keyword may be passed to supply an
+            :class:`~reusableagents.context.AgentContext`.  If neither
+            the constructor nor ``run()`` receives a context, one is
+            created automatically with default values.
+
         Returns
         -------
         AgentResponse
@@ -281,6 +304,22 @@ class ReusableReActAgent:
             If the agent exceeds ``max_react_iterations`` without reaching a
             final answer.  Catch this to handle runaway loops gracefully.
         """
+        # --- resolve context (run-time > constructor > auto-create) ---
+        ctx = prompt_variables.pop("context", None)
+        if ctx is not None and not isinstance(ctx, AgentContext):
+            raise TypeError(
+                f"context must be an AgentContext instance or None, "
+                f"got {type(ctx).__name__!r}"
+            )
+        if ctx is None:
+            ctx = self.context
+        if ctx is None:
+            ctx = AgentContext()
+            logger.debug("Auto-created AgentContext (session=%s)", ctx.session.session_id)
+        self.context = ctx
+
+        ctx.record("ReusableReActAgent", "started")
+
         system_prompt = self.prompt_builder.render_system(**prompt_variables)
         user_message = self.prompt_builder.render_user(**prompt_variables)
 
@@ -301,6 +340,12 @@ class ReusableReActAgent:
             text = response.output if isinstance(response.output, str) else str(response.output)
             structured = self._extract_structured_output(text)
             response = response.model_copy(update={"output": structured})
+
+        ctx.record(
+            "ReusableReActAgent",
+            "completed",
+            detail=str(response.output)[:200] if response.output else None,
+        )
 
         return response
 

@@ -1,3 +1,8 @@
+"""
+configuration.py
+Registers agent-adk as reusableagents and patches the broken
+create_agent import in react_agent.py at runtime.
+"""
 import sys
 import types
 import importlib
@@ -12,18 +17,16 @@ def register_agent_adk() -> None:
     pkg = types.ModuleType("reusableagents")
     pkg.__path__ = [str(adk_root)]
     sys.modules["reusableagents"] = pkg
-
     # Patch broken create_agent import in react_agent.py
-    # Wraps create_react_agent to accept system_prompt keyword argument
     from langgraph.prebuilt import create_react_agent
     from langchain_core.messages import SystemMessage
 
     def create_agent_patch(model, tools, system_prompt=None, **kwargs):
         if system_prompt:
-            from langgraph.prebuilt import create_react_agent as _cra
-            return _cra(model, tools, prompt=SystemMessage(content=system_prompt), **kwargs)
-        from langgraph.prebuilt import create_react_agent as _cra
-        return _cra(model, tools, **kwargs)
+            return create_react_agent(
+                model, tools, prompt=SystemMessage(content=system_prompt), **kwargs
+            )
+        return create_react_agent(model, tools, **kwargs)
 
     import langchain.agents as lc_agents
     if not hasattr(lc_agents, "create_agent"):

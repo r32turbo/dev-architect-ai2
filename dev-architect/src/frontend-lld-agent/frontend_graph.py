@@ -1,6 +1,6 @@
 """
 graph.py
-Builds and returns the ReusableReActAgent for the Generic LLD Agent.
+Builds and returns the ReusableReActAgent for the Frontend LLD Agent.
 Uses AgentContext from the updated agent-adk.
 """
 import logging
@@ -18,7 +18,7 @@ if _AGENT_DIR not in sys.path:
 def _import_from_agent(module_name: str):
     """Import a module strictly from this agent's own directory."""
     spec = importlib.util.spec_from_file_location(
-        f"generic_lld_agent.{module_name}",
+        f"frontend_lld_agent.{module_name}",
         Path(__file__).resolve().parent / f"{module_name}.py",
     )
     mod = importlib.util.module_from_spec(spec)
@@ -26,15 +26,15 @@ def _import_from_agent(module_name: str):
     return mod
 
 
-_configuration       = _import_from_agent("configuration")
-_prompts             = _import_from_agent("prompts")
+_configuration = _import_from_agent("frontend_configuration")
+_prompts       = _import_from_agent("frontend_prompts")
 
 register_agent_adk   = _configuration.register_agent_adk
 GeminiConfig         = _configuration.GeminiConfig
 AgentConfig          = _configuration.AgentConfig
 create_agent_llm     = _configuration.create_agent_llm
 create_validator_llm = _configuration.create_validator_llm
-GENERIC_LLD_PROMPT   = _prompts.GENERIC_LLD_PROMPT
+FRONTEND_LLD_PROMPT  = _prompts.FRONTEND_LLD_PROMPT
 
 register_agent_adk()
 
@@ -49,7 +49,7 @@ AuthInfo           = importlib.import_module("reusableagents.context").AuthInfo
 
 def build_agent() -> ReusableReActAgent:
     """
-    Build and return the Generic LLD ReAct agent.
+    Build and return the Frontend LLD ReAct agent.
     Called by the supervisor or main.py with:
         agent.run(
             context=ctx,
@@ -58,7 +58,7 @@ def build_agent() -> ReusableReActAgent:
             architecture_doc=...,
         )
     """
-    logger.info("Building Generic LLD Agent ...")
+    logger.info("Building Frontend LLD Agent ...")
 
     # Step 1 – LLM config using GeminiConfig
     gemini_config = GeminiConfig(
@@ -92,23 +92,23 @@ def build_agent() -> ReusableReActAgent:
     agent = ReusableReActAgent(
         tools=[],
         llm=agent_llm,
-        prompt_builder=GENERIC_LLD_PROMPT,
+        prompt_builder=FRONTEND_LLD_PROMPT,
         validator=validator,
         config=agent_config,
     )
 
-    logger.info("Generic LLD Agent built successfully.")
+    logger.info("Frontend LLD Agent built successfully.")
     return agent
 
 
 def create_context(user_id: str = "api-user", session_metadata: dict = None) -> AgentContext:
     """
-    Create an AgentContext for the Generic LLD Agent.
+    Create an AgentContext for the Frontend LLD Agent.
     Called by main.py / FastAPI to create a context per request.
     """
     return AgentContext(
         session=SessionInfo(
-            metadata=session_metadata or {"source": "generic-lld-agent"},
+            metadata=session_metadata or {"source": "frontend-lld-agent"},
         ),
         auth=AuthInfo(
             user_id=user_id,
