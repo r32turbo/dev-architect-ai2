@@ -2,125 +2,168 @@
 prompts.py – Backend LLD Agent Prompt (Structured Format)
 """
 
-from reusableagents.prompts.base import PromptBuilder
+import importlib
+import sys
+import types
+from pathlib import Path
 
 
-# ============================================================
-# ✅ SYSTEM PROMPT (Persona + Context)
-# ============================================================
+# ---------- Register agent-adk ----------
+def register_agent_adk():
+    if "reusableagents" in sys.modules:
+        return
+
+    base_path = Path(__file__).resolve()
+
+    possible_paths = [
+        base_path.parents[1] / "agent-adk",
+        base_path.parents[2] / "agent-adk",
+        base_path.parents[3] / "agent-adk",
+    ]
+
+    for path in possible_paths:
+        if path.exists():
+            pkg = types.ModuleType("reusableagents")
+            pkg.__path__ = [str(path)]
+            sys.modules["reusableagents"] = pkg
+            return
+
+
+register_agent_adk()
+
+
+# ---------- PromptBuilder ----------
+PromptBuilder = importlib.import_module(
+    "reusableagents.prompts.base"
+).PromptBuilder
 
  
+# ---------- SYSTEM PROMPT ----------
 SYSTEM_PROMPT = """
-You are a Senior Backend Architect and LLD (Low-Level Design) expert.
+### Role
+You are a Senior Backend Architect and Design Reviewer.
 
-You specialize in designing production-ready backend systems with clear, structured, and implementation-level detail.
+### Context
+You are given a Backend Low-Level Design (LLD) created by another engineer.
 
-You NEVER produce high-level summaries, reviews, or explanations.
-You ONLY generate structured backend LLD outputs.
+Your job is to critically REVIEW the design and produce a professional review report.
+
+### Instructions
+- Do NOT generate a new LLD
+- Do NOT redesign the system
+- ONLY analyze and review the given design
+
+### Output Format (STRICT)
+
+# LLD Review Report
+
+## Document Overview
+Brief summary of what the system is and what this review covers.
+
+## Strengths
+- What is well designed
+- Good architectural decisions
+
+## Gaps and Risks
+- Missing components
+- Weak design areas
+- Risks in scalability/security/data
+
+## Architectural Assessment
+- Overall evaluation of design maturity
+- Is it production-ready or not
+
+## Missing or Ambiguous Details
+- Anything unclear or undefined
+
+## Improvement Recommendations
+- Concrete steps to improve the system
+
+## Prioritized Next Steps
+- What should be fixed first
+
+## Clarifying Questions
+- Questions to ask before implementation
 """
+
 # ============================================================
 # ✅ USER PROMPT (Goal + Input + Constraints + Format)
 # ============================================================
 
 USER_PROMPT = """
-Design a complete backend low-level design for the following feature/system:
+### 3. Goal / Task  
+Review the following Backend Low-Level Design and generate a COMPLETE review report.
+
+---
+
+### 4. Input Data  
+Here is the system input:
 
 \"\"\"
 {lld_input}
 \"\"\"
 
-Your response MUST strictly follow this structure and be detailed, technical, and implementation-ready.
+---
+
+### 6. Few-Shot Example  
+
+Example Output Structure:
+
+1. System Components
+- API Gateway
+- Service Layer
+- Database Layer
+
+2. Class Design
+Class: UserService
+- createUser()
+- getUser()
+
+3. API Design
+POST /users
+GET /users/{id}
+
+4. Database Schema
+Table: users
+- id
+- name
+- email
+
+5. Data Flow
+Client → API → Service → DB → Response
+
+6. Design Patterns
+- MVC
+- Repository Pattern
+
+7. Assumptions
+- System is scalable
+- Authentication required
 
 ---
 
-## 1. 📌 Feature Overview
-- Clearly explain what the feature does
-- Define scope, assumptions, and constraints
-
----
-
-## 2. 🧩 API Design
-Provide REST API endpoints including:
-- HTTP method + endpoint
-- Request body (JSON format)
-- Response format (JSON)
-- Status codes with meaning
-
----
-
-## 3. 🗄️ Database Design
-- Define tables with fields and data types
-- Mention Primary Keys (PK) and Foreign Keys (FK)
-- Include relationships between tables
-- Suggest indexing strategies
-- If no DB is required, explicitly say: "No database required"
-
----
-
-## 4. 🏗️ Class Design (Core Backend Logic)
-- Provide class structure with methods
-- Use proper separation (Controller, Service, Repository)
-- Include method signatures and responsibilities
-
----
-
-## 5. 🔁 Sequence Flow / Logic
-- Explain step-by-step flow
-- Use clear sequence (Client → API → Service → DB → Response)
-
----
-
-## 6. ⚠️ Validation & Error Handling
-- Input validation rules
-- Handling duplicate data
-- Exception handling
-- API error responses
-
----
-
-## 7. 🔐 Security Considerations
-- Authentication (JWT/OAuth/etc.)
-- Authorization
-- Password hashing
-- Rate limiting / abuse prevention
-
----
-
-## 8. ⚡ Performance Considerations
-- Caching strategy
-- Pagination
-- Query optimization
-- Scalability suggestions
-
----
-
-## 9. 🧪 Test Cases (Important)
-- Unit test scenarios
-- Edge cases
-- Failure cases
-
----
-
-### STRICT RULES:
-- Do NOT add extra sections
-- Do NOT skip any section
-- Do NOT explain theory
-- Do NOT generate review/analysis text
-- Output must be structured and production-ready
+### Final Instruction
+Generate the Backend LLD in the SAME structured format.
+Do NOT skip any section.
+Do NOT give partial output.
 """
+
+
 # ============================================================
 # ✅ FINAL BUILDER
 # ============================================================
 
 BACKEND_LLD_PROMPT = (
-    PromptBuilder()
-    .add_system(SYSTEM_PROMPT, name="system")
-    .add_user(USER_PROMPT, name="user")
+PromptBuilder()
+.add_system(SYSTEM_PROMPT, name="system")
+.add_user(USER_PROMPT, name="user")
 )
-
 
 # ============================================================
 # ✅ TASK NAME
 # ============================================================
 
-BACKEND_LLD_TASK = "Generate Backend LLD"
+# ---------- TASK TEMPLATE ----------
+BACKEND_LLD_TASK = """
+Generate a detailed Backend Low-Level Design using the provided input.
+"""
