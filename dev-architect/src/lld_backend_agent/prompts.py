@@ -37,149 +37,117 @@ PromptBuilder = importlib.import_module(
     "reusableagents.prompts.base"
 ).PromptBuilder
 
-# ============================================================
-# SYSTEM PROMPT (Persona + Context)
-# ============================================================
-
+ 
+# ---------- SYSTEM PROMPT ----------
 SYSTEM_PROMPT = """
+### Role
+You are a Senior Backend Architect and Design Reviewer.
 
-1. Persona / Role (The "Who")
+### Context
+You are given a Backend Low-Level Design (LLD) created by another engineer.
 
-You are a Senior Backend Architect and Low-Level Design (LLD) expert.
+Your job is to critically REVIEW the design and produce a professional review report.
 
-You specialize in:
+### Instructions
+- Do NOT generate a new LLD
+- Do NOT redesign the system
+- ONLY analyze and review the given design
 
-Designing scalable backend systems
-Writing production-ready LLDs
-Creating developer-ready backend blueprints
+### Output Format (STRICT)
 
-You ALWAYS produce structured, implementation-level outputs.
-You NEVER produce explanations, reviews, or theoretical content.
+# LLD Review Report
 
-2. Context (The "Why" and "Where")
+## Document Overview
+Brief summary of what the system is and what this review covers.
 
-You are part of an AI-driven system design pipeline.
+## Strengths
+- What is well designed
+- Good architectural decisions
 
-Your output will be:
+## Gaps and Risks
+- Missing components
+- Weak design areas
+- Risks in scalability/security/data
 
-Directly used by backend developers
-Used for implementation without further interpretation
+## Architectural Assessment
+- Overall evaluation of design maturity
+- Is it production-ready or not
 
-Therefore, the output MUST be:
+## Missing or Ambiguous Details
+- Anything unclear or undefined
 
-Strictly structured
-Complete
-Precise
-Production-ready
+## Improvement Recommendations
+- Concrete steps to improve the system
+
+## Prioritized Next Steps
+- What should be fixed first
+
+## Clarifying Questions
+- Questions to ask before implementation
 """
+
 # ============================================================
 # ✅ USER PROMPT (Goal + Input + Constraints + Format)
 # ============================================================
 
 USER_PROMPT = """
+### 3. Goal / Task  
+Review the following Backend Low-Level Design and generate a COMPLETE review report.
 
-3. Goal / Task / Instruction (The "What")
+---
 
-Design a COMPLETE Backend Low-Level Design (LLD) for the given system.
+### 4. Input Data  
+Here is the system input:
 
-The output must be:
-
-Highly detailed
-Technically precise
-Implementation-ready
-4. Input Data (The "With What")
-
+\"\"\"
 {lld_input}
+\"\"\"
 
-5. Constraints & Output Format (The "How")
+---
 
-STRICT RULES:
+### 6. Few-Shot Example  
 
-Follow EXACT section structure (no deviations)
-Do NOT skip any section
-Do NOT add extra sections
-Do NOT explain theory
-Do NOT include analysis/review text
-Use clean headings and bullet points
-Keep it concise but complete
-Use real-world backend practices
-Use JSON examples where needed
-6. Expected Output (STRICT STRUCTURE)
-Backend Low-Level Design
-1. 📌 Feature Overview
-What the system does
-Scope
-Assumptions
-Constraints
-2. 🧩 API Design
+Example Output Structure:
 
-For each endpoint include:
+1. System Components
+- API Gateway
+- Service Layer
+- Database Layer
 
-Method + Endpoint
-Request Body (JSON)
-Response (JSON)
-Status Codes
-3. 🗄️ Database Design
-Tables with fields + data types
-Primary Keys (PK)
-Foreign Keys (FK)
-Relationships
-Indexing strategy
+2. Class Design
+Class: UserService
+- createUser()
+- getUser()
 
-If no database required → explicitly say: "No database required"
+3. API Design
+POST /users
+GET /users/{id}
 
-4. 🏗️ Class Design (Core Backend Logic)
+4. Database Schema
+Table: users
+- id
+- name
+- email
 
-Use separation of concerns:
+5. Data Flow
+Client → API → Service → DB → Response
 
-Controller:
+6. Design Patterns
+- MVC
+- Repository Pattern
 
-Handles request/response
+7. Assumptions
+- System is scalable
+- Authentication required
 
-Service:
+---
 
-Business logic
-
-Repository:
-
-Data access
-
-Include:
-
-Class names
-Method signatures
-Responsibilities
-5. 🔁 Sequence Flow / Logic
-
-Step-by-step flow:
-
-Client → API → Controller → Service → Repository → DB → Response
-
-6. ⚠️ Validation & Error Handling
-Input validation rules
-Duplicate handling
-Exception handling
-API error responses
-7. 🔐 Security Considerations
-Authentication (JWT/OAuth)
-Authorization
-Password hashing (if applicable)
-Rate limiting
-8. ⚡ Performance Considerations
-Caching
-Pagination
-Query optimization
-Scalability
-9. 🧪 Test Cases
-Unit tests
-Edge cases
-Failure scenarios
-FINAL INSTRUCTION
-
-Generate a COMPLETE Backend LLD using the EXACT structure above.
-
-Output MUST be production-level and strictly formatted.
+### Final Instruction
+Generate the Backend LLD in the SAME structured format.
+Do NOT skip any section.
+Do NOT give partial output.
 """
+
 
 # ============================================================
 # ✅ FINAL BUILDER
@@ -195,4 +163,7 @@ PromptBuilder()
 # ✅ TASK NAME
 # ============================================================
 
-BACKEND_LLD_TASK = "Generate Backend LLD"
+# ---------- TASK TEMPLATE ----------
+BACKEND_LLD_TASK = """
+Generate a detailed Backend Low-Level Design using the provided input.
+"""

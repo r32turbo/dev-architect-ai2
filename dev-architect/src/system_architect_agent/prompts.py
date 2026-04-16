@@ -96,7 +96,3 @@ Analyze the following System Analyst document and generate the System Architectu
 System Analyst Document:
 {input_document}
 """
-
-
-def create_prompt(input_document):
-    return USER_ARCHITECT_PROMPT.format(input_document=input_document)
