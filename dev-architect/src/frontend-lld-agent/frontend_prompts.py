@@ -11,7 +11,7 @@ Prompt structure:
   WITH  - input data (user section, dynamic)
 """
 import importlib
-from configuration import register_agent_adk
+from frontend_configuration import register_agent_adk
 
 register_agent_adk()
 

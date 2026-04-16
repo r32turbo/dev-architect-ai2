@@ -26,8 +26,8 @@ def _import_from_agent(module_name: str):
     return mod
 
 
-_configuration       = _import_from_agent("configuration")
-_prompts             = _import_from_agent("prompts")
+_configuration = _import_from_agent("frontend_configuration")
+_prompts       = _import_from_agent("frontend_prompts")
 
 register_agent_adk   = _configuration.register_agent_adk
 GeminiConfig         = _configuration.GeminiConfig
