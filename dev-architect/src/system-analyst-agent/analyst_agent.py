@@ -3,6 +3,7 @@ import sys
 import types
 import importlib
 import logging
+import time
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -16,6 +17,15 @@ try:
     from .prompt import SYSTEM_ANALYST_PROMPT
 except ImportError:
     from prompt import SYSTEM_ANALYST_PROMPT  # type: ignore[reportMissingImports]
+
+try:
+    from .observability import setup_logging, setup_mlflow
+except ImportError:
+    try:
+        from observability import setup_logging, setup_mlflow  # type: ignore[reportMissingImports]
+    except ImportError:
+        setup_logging = None  # type: ignore[assignment]
+        setup_mlflow = None  # type: ignore[assignment]
 
 # Hide known ChatVertexAI deprecation warnings from terminal output.
 warnings.filterwarnings(
@@ -39,6 +49,29 @@ if "reusableagents" not in sys.modules:
     sys.modules["reusableagents"] = reusableagents_pkg
 
 logger = logging.getLogger(__name__)
+_OBSERVABILITY_INITIALIZED = False
+
+
+def _initialize_observability() -> None:
+    """Initialize observability once and never block agent execution on errors."""
+    global _OBSERVABILITY_INITIALIZED
+    if _OBSERVABILITY_INITIALIZED:
+        return
+
+    enabled = os.getenv("SYSTEM_ANALYST_OBSERVABILITY_ENABLED", "1").strip().lower()
+    if enabled in {"0", "false", "no", "off"}:
+        _OBSERVABILITY_INITIALIZED = True
+        return
+
+    try:
+        if callable(setup_logging):
+            setup_logging()
+        if callable(setup_mlflow):
+            setup_mlflow()
+    except Exception as exc:
+        logger.warning("Observability init failed; continuing without it: %s", exc)
+    finally:
+        _OBSERVABILITY_INITIALIZED = True
 
 
 def _get_chunking_config() -> tuple[int, int]:
@@ -159,7 +192,15 @@ def normalize_analyst_output(text: str) -> str:
 
 # ---------------- ENV ----------------
 def load_environment():
-    for path in [Path.cwd(), *Path.cwd().parents]:
+    base_dir = Path(__file__).resolve().parent
+    search_roots = [base_dir, *base_dir.parents, Path.cwd(), *Path.cwd().parents]
+    seen: set[Path] = set()
+
+    for path in search_roots:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
         env_file = path / ".env"
         if env_file.exists():
             load_dotenv(env_file)
@@ -230,10 +271,27 @@ def run_system_analysis(
 ) -> str:
     """Run the analyst workflow with optional shared context."""
     load_environment()
+    _initialize_observability()
     agent = build_agent(context)
     resolved_goal = _resolve_user_goal(user_goal=user_goal, context=context)
     if not resolved_goal:
         raise ValueError("user_goal is required (directly or via context.state['user_goal'])")
+
+    started_at = time.perf_counter()
+    mlflow_module = None
+    mlflow_run_started = False
+    try:
+        import mlflow  # type: ignore[reportMissingImports]
+
+        mlflow_module = mlflow
+        enabled = os.getenv("SYSTEM_ANALYST_OBSERVABILITY_ENABLED", "1").strip().lower()
+        if enabled not in {"0", "false", "no", "off"}:
+            mlflow.start_run(run_name="system_analyst_agent", nested=True)
+            mlflow_run_started = True
+            mlflow.set_tag("agent", "system_analyst_agent")
+            mlflow.log_param("user_goal_length", len(resolved_goal))
+    except Exception as exc:
+        logger.debug("MLflow run start skipped: %s", exc)
 
     if context is not None and callable(getattr(context, "record", None)):
         context.record(
@@ -272,6 +330,16 @@ def run_system_analysis(
         context.set_state("system_analyst.output", output)
     if context is not None and callable(getattr(context, "record", None)):
         context.record(agent_name="system_analyst_agent", event="completed")
+
+    duration_seconds = time.perf_counter() - started_at
+    if mlflow_module is not None and mlflow_run_started:
+        try:
+            mlflow_module.log_metric("duration_seconds", float(duration_seconds))
+            mlflow_module.log_metric("output_length", float(len(output)))
+            mlflow_module.log_param("chunk_count", len(goal_chunks))
+            mlflow_module.end_run(status="FINISHED")
+        except Exception as exc:
+            logger.debug("MLflow run finalize skipped: %s", exc)
 
     return output
 
