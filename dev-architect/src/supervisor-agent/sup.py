@@ -25,6 +25,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 ADK_ROOT = SRC_DIR / "agent-adk"
 SYSTEM_ANALYST_DIR = SRC_DIR / "system-analyst-agent"
 SYSTEM_ANALYST_PROMPT_PATH = SYSTEM_ANALYST_DIR / "prompt.py"
+SYSTEM_ARCHITECT_DIR = SRC_DIR / "system_architect_agent"
+FRONTEND_LLD_DIR = SRC_DIR / "frontend-lld-agent"
 
 # Hide known ChatVertexAI deprecation warnings from terminal output.
 warnings.filterwarnings(
@@ -60,6 +62,20 @@ def _resolve_system_analyst_entry_path() -> Path:
     raise FileNotFoundError(
         f"System analyst entry file not found. Expected one of: {preferred}, {legacy}"
     )
+
+
+def _resolve_system_architect_entry_path() -> Path:
+    preferred = SYSTEM_ARCHITECT_DIR / "sysaapp.py"
+    if preferred.is_file():
+        return preferred
+    raise FileNotFoundError(f"System architect entry file not found. Expected: {preferred}")
+
+
+def _resolve_frontend_lld_entry_path() -> Path:
+    preferred = FRONTEND_LLD_DIR / "frontend_graph.py"
+    if preferred.is_file():
+        return preferred
+    raise FileNotFoundError(f"Frontend LLD entry file not found. Expected: {preferred}")
 
 
 def _ensure_reusableagents_package() -> None:
@@ -209,6 +225,9 @@ class SystemAnalystWorker:
         self._agent = None
 
     def run(self, task: str, context: "AgentContext | None" = None):
+        # Avoid long MLflow retries (localhost:5000) during supervisor runs.
+        # Users can still explicitly enable this by setting value to 1.
+        os.environ.setdefault("SYSTEM_ANALYST_OBSERVABILITY_ENABLED", "0")
         if context is not None and callable(getattr(context, "record", None)):
             context.record(
                 agent_name="system_analyst_worker",
@@ -439,6 +458,80 @@ class LLDWorker:
         return self._agent_response_type(output=output)
 
 
+class SystemArchitectWorker:
+    def __init__(self, agent_response_type: Any) -> None:
+        self._agent_response_type = agent_response_type
+        self._module = None
+
+    def run(self, task: str, context: "AgentContext | None" = None):
+        if context is not None and callable(getattr(context, "record", None)):
+            context.record(
+                agent_name="system_architect_worker",
+                event="started",
+                detail=str(task)[:160],
+            )
+
+        if self._module is None:
+            self._module = _load_module(
+                "system_architect_main", _resolve_system_architect_entry_path()
+            )
+            if hasattr(self._module, "load_environment"):
+                self._module.load_environment()
+
+        run_in_module = getattr(self._module, "run_system_architect", None)
+        if not callable(run_in_module):
+            raise RuntimeError("System architect module does not expose run_system_architect")
+
+        output = str(run_in_module(input_document=task, context=context)).strip()
+        if context is not None and callable(getattr(context, "set_state", None)):
+            context.set_state("system_architect.output", output)
+            context.record(agent_name="system_architect_worker", event="completed")
+        return self._agent_response_type(output=output)
+
+
+class FrontendLLDWorker:
+    def __init__(self, agent_response_type: Any) -> None:
+        self._agent_response_type = agent_response_type
+        self._module = None
+        self._agent = None
+
+    def run(self, task: str, context: "AgentContext | None" = None):
+        if context is not None and callable(getattr(context, "record", None)):
+            context.record(
+                agent_name="frontend_lld_worker",
+                event="started",
+                detail=str(task)[:160],
+            )
+
+        if self._module is None:
+            self._module = _load_module("frontend_lld_main", _resolve_frontend_lld_entry_path())
+        if self._agent is None:
+            build_agent = getattr(self._module, "build_agent", None)
+            if not callable(build_agent):
+                raise RuntimeError("Frontend LLD module does not expose build_agent")
+            self._agent = build_agent()
+
+        state = getattr(context, "state", None)
+        state = state if isinstance(state, dict) else {}
+        user_input = str(state.get("user_goal", "")).strip() or str(task).strip()
+        requirement_doc = str(state.get("system_analyst.output", "")).strip() or str(task).strip()
+        architecture_doc = str(state.get("system_architect.output", "")).strip() or str(task).strip()
+
+        result = self._agent.run(
+            context=context,
+            user_input=user_input,
+            requirement_doc=requirement_doc,
+            architecture_doc=architecture_doc,
+        )
+        output = result.output if hasattr(result, "output") else str(result)
+        output = str(output).strip()
+
+        if context is not None and callable(getattr(context, "set_state", None)):
+            context.set_state("frontend_lld.output", output)
+            context.record(agent_name="frontend_lld_worker", event="completed")
+        return self._agent_response_type(output=output)
+
+
 def _extract_output_text(result: Any) -> str:
     return result.output if hasattr(result, "output") else str(result)
 
@@ -468,6 +561,8 @@ def _is_complete_combined_output(text: str) -> bool:
     required_sections = [
         "User Goal",
         "System Analyst Output",
+        "System Architect Output",
+        "Frontend LLD Output",
         "LLD Sections",
         "LLD Architecture Analysis",
         "LLD Final Report",
@@ -483,6 +578,10 @@ def _normalize_section_title(title: str) -> str:
         "user goal": "User Goal",
         "system analyst output": "System Analyst Output",
         "system analysis output": "System Analyst Output",
+        "system architect output": "System Architect Output",
+        "system architecture output": "System Architect Output",
+        "frontend lld output": "Frontend LLD Output",
+        "frontend output": "Frontend LLD Output",
         "lld sections": "LLD Sections",
         "sections": "LLD Sections",
         "lld architecture analysis": "LLD Architecture Analysis",
@@ -527,6 +626,8 @@ def _normalize_orchestrator_output(text: str, user_goal: str) -> str:
     recognized_sections = [
         "User Goal",
         "System Analyst Output",
+        "System Architect Output",
+        "Frontend LLD Output",
         "LLD Sections",
         "LLD Architecture Analysis",
         "LLD Final Report",
@@ -538,6 +639,8 @@ def _normalize_orchestrator_output(text: str, user_goal: str) -> str:
     return _render_combined_output(
         user_goal=parsed.get("User Goal", "").strip() or str(user_goal).strip(),
         system_analyst_output=parsed.get("System Analyst Output", "").strip(),
+        system_architect_output=parsed.get("System Architect Output", "").strip(),
+        frontend_lld_output=parsed.get("Frontend LLD Output", "").strip(),
         lld_sections=parsed.get("LLD Sections", "").strip(),
         lld_architecture_analysis=parsed.get("LLD Architecture Analysis", "").strip(),
         lld_final_report=parsed.get("LLD Final Report", "").strip(),
@@ -560,6 +663,8 @@ def _coerce_partial_orchestrator_output(text: str, user_goal: str) -> str:
 
     user_goal_text = parsed.get("User Goal", "").strip() or str(user_goal).strip()
     system_text = parsed.get("System Analyst Output", "").strip()
+    system_architect_text = parsed.get("System Architect Output", "").strip()
+    frontend_lld_text = parsed.get("Frontend LLD Output", "").strip()
     lld_sections = parsed.get("LLD Sections", "").strip()
     lld_arch = parsed.get("LLD Architecture Analysis", "").strip()
     lld_final = parsed.get("LLD Final Report", "").strip()
@@ -567,6 +672,8 @@ def _coerce_partial_orchestrator_output(text: str, user_goal: str) -> str:
     return _render_combined_output(
         user_goal=user_goal_text,
         system_analyst_output=system_text,
+        system_architect_output=system_architect_text,
+        frontend_lld_output=frontend_lld_text,
         lld_sections=lld_sections,
         lld_architecture_analysis=lld_arch,
         lld_final_report=lld_final,
@@ -576,6 +683,8 @@ def _coerce_partial_orchestrator_output(text: str, user_goal: str) -> str:
 def _render_combined_output(
     user_goal: str,
     system_analyst_output: str,
+    system_architect_output: str,
+    frontend_lld_output: str,
     lld_sections: str,
     lld_architecture_analysis: str,
     lld_final_report: str,
@@ -585,6 +694,10 @@ def _render_combined_output(
         f"{user_goal}\n\n"
         "## System Analyst Output\n\n"
         f"{system_analyst_output}\n\n"
+        "## System Architect Output\n\n"
+        f"{system_architect_output}\n\n"
+        "## Frontend LLD Output\n\n"
+        f"{frontend_lld_output}\n\n"
         "## LLD Sections\n\n"
         f"{lld_sections}\n\n"
         "## LLD Architecture Analysis\n\n"
@@ -620,6 +733,14 @@ def _canonicalize_combined_output(
         parsed.get("System Analyst Output", ""),
         str(state.get("system_analyst.output", "")),
     )
+    system_architect_text = _pick(
+        parsed.get("System Architect Output", ""),
+        str(state.get("system_architect.output", "")),
+    )
+    frontend_lld_text = _pick(
+        parsed.get("Frontend LLD Output", ""),
+        str(state.get("frontend_lld.output", "")),
+    )
 
     lld_output = state.get("lld.output")
     lld_dict = lld_output if isinstance(lld_output, dict) else {}
@@ -649,6 +770,8 @@ def _canonicalize_combined_output(
     return _render_combined_output(
         user_goal=user_goal_text,
         system_analyst_output=system_text,
+        system_architect_output=system_architect_text,
+        frontend_lld_output=frontend_lld_text,
         lld_sections=lld_sections,
         lld_architecture_analysis=lld_architecture_analysis,
         lld_final_report=lld_final_report,
@@ -668,17 +791,21 @@ def build_supervisor_agent():
     ) = _load_adk_components()
 
     system_worker = SystemAnalystWorker(AgentResponse)
+    system_architect_worker = SystemArchitectWorker(AgentResponse)
+    frontend_lld_worker = FrontendLLDWorker(AgentResponse)
     lld_worker = LLDWorker(AgentResponse)
 
     prompt_builder = (
         PromptBuilder()
         .add_system(
-            "You are a supervisor orchestrating two workers. "
+            "You are a supervisor orchestrating four workers. "
             "You MUST do exactly this sequence: "
             "1) Call system_analyst with the user goal. "
-            "2) Pass the FULL system_analyst output as the task input to lld_agent. "
-            "3) Return a combined markdown response with these sections only: "
-            "User Goal, System Analyst Output, LLD Sections, LLD Architecture Analysis, LLD Final Report. "
+            "2) Pass the FULL system_analyst output as the task input to system_architect_agent. "
+            "3) Pass the FULL system_architect_agent output as the task input to frontend_lld_agent. "
+            "4) Pass the FULL frontend_lld_agent output as the task input to lld_agent. "
+            "5) Return a combined markdown response with these sections only: "
+            "User Goal, System Analyst Output, System Architect Output, Frontend LLD Output, LLD Sections, LLD Architecture Analysis, LLD Final Report. "
             "Do not skip steps and do not invent tool outputs. "
             "If any worker returns an error message, include it verbatim under the corresponding section. "
             "Do not apologize or replace errors with generic text.",
@@ -705,8 +832,20 @@ def build_supervisor_agent():
                 task_variable="task",
             ),
             WorkerSpec(
+                name="system_architect_agent",
+                description="Consumes System Analyst output and returns system architecture output.",
+                agent=system_architect_worker,
+                task_variable="task",
+            ),
+            WorkerSpec(
+                name="frontend_lld_agent",
+                description="Consumes architecture and requirement docs to generate frontend LLD output.",
+                agent=frontend_lld_worker,
+                task_variable="task",
+            ),
+            WorkerSpec(
                 name="lld_agent",
-                description="Consumes System Analyst output and returns JSON with sections, architecture_analysis, and final_report.",
+                description="Consumes Frontend LLD output and returns JSON with sections, architecture_analysis, and final_report.",
                 agent=lld_worker,
                 task_variable="task",
             ),
@@ -729,7 +868,9 @@ def main() -> None:
     _load_environment()
     logger.info("Starting supervisor pipeline")
     supervisor = build_supervisor_agent()
-    pipeline_timeout_seconds = int(os.getenv("SUPERVISOR_PIPELINE_TIMEOUT_SECONDS", "180"))
+    pipeline_timeout_seconds = int(os.getenv("SUPERVISOR_PIPELINE_TIMEOUT_SECONDS", "900"))
+    if pipeline_timeout_seconds < 300:
+        pipeline_timeout_seconds = 300
 
     user_goal = (
         " ".join(sys.argv[1:]).strip()

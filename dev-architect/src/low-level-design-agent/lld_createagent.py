@@ -220,7 +220,7 @@ validator = OutputValidator(
 react_prompt = (
     PromptBuilder()
     .add_system(
-        "You are a precise low-level design review assistant. "
+        "You are a precise low-level design generator for a one-page marketing website. "
         "Follow the task exactly and return only the requested output.",
         name="persona",
     )
@@ -396,5 +396,5 @@ if __name__ == "__main__":
     )
     result = run_pipeline(LLD_INPUT)
 
-    print("\n------ LLD REVIEW REPORT ------\n")
+    print("\n------ LLD REPORT ------\n")
     print(result["final_report"])
