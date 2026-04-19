@@ -22,11 +22,14 @@ if TYPE_CHECKING:
 
 SRC_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[3]
+WORKSPACE_ROOT = REPO_ROOT.parent
 ADK_ROOT = SRC_DIR / "agent-adk"
 SYSTEM_ANALYST_DIR = SRC_DIR / "system-analyst-agent"
 SYSTEM_ANALYST_PROMPT_PATH = SYSTEM_ANALYST_DIR / "prompt.py"
 SYSTEM_ARCHITECT_DIR = SRC_DIR / "system_architect_agent"
 FRONTEND_LLD_DIR = SRC_DIR / "frontend-lld-agent"
+LLD_BACKEND_DIR = SRC_DIR / "lld_backend_agent"
+GENERIC_LLD_DIR = SRC_DIR / "generic-lld-agent"
 
 # Hide known ChatVertexAI deprecation warnings from terminal output.
 warnings.filterwarnings(
@@ -50,6 +53,59 @@ if str(ADK_ROOT) not in sys.path:
     sys.path.insert(0, str(ADK_ROOT))
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_chunk_size() -> int:
+    value = str(os.getenv("SUPERVISOR_OUTPUT_CHUNK_SIZE", "6000")).strip()
+    try:
+        size = int(value)
+    except ValueError:
+        size = 6000
+    return max(500, size)
+
+
+def _chunk_text(text: str, chunk_size: int) -> list[str]:
+    payload = str(text or "")
+    if not payload:
+        return []
+    return [payload[i : i + chunk_size] for i in range(0, len(payload), chunk_size)]
+
+
+def _store_agent_chunks(agent_key: str, output: str, context: "AgentContext | None") -> None:
+    if context is None or not callable(getattr(context, "set_state", None)):
+        return
+    chunks = _chunk_text(str(output or ""), _resolve_chunk_size())
+    context.set_state(f"{agent_key}.output_chunks", chunks)
+    context.set_state(f"{agent_key}.output_chunk_count", len(chunks))
+
+
+def _write_full_output(text: str) -> Path | None:
+    raw_path = str(os.getenv("SUPERVISOR_OUTPUT_PATH", "")).strip()
+    output_path = Path(raw_path) if raw_path else WORKSPACE_ROOT / "supervisor_output_latest.txt"
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(str(text or ""), encoding="utf-8")
+        return output_path
+    except Exception as exc:
+        logger.warning("Failed to write supervisor output file: %s", exc)
+        return None
+
+
+def _print_chunked_output(text: str) -> None:
+    payload = str(text or "")
+    if not payload:
+        print("No output generated.")
+        return
+
+    chunks = _chunk_text(payload, _resolve_chunk_size())
+    if len(chunks) <= 1:
+        print(payload)
+        return
+
+    total = len(chunks)
+    for index, chunk in enumerate(chunks, start=1):
+        print(f"\n--- OUTPUT CHUNK {index}/{total} ---\n")
+        print(chunk)
 
 
 def _resolve_system_analyst_entry_path() -> Path:
@@ -76,6 +132,20 @@ def _resolve_frontend_lld_entry_path() -> Path:
     if preferred.is_file():
         return preferred
     raise FileNotFoundError(f"Frontend LLD entry file not found. Expected: {preferred}")
+
+
+def _resolve_lld_backend_entry_path() -> Path:
+    preferred = LLD_BACKEND_DIR / "lldbapp.py"
+    if preferred.is_file():
+        return preferred
+    raise FileNotFoundError(f"Backend LLD entry file not found. Expected: {preferred}")
+
+
+def _resolve_generic_lld_entry_path() -> Path:
+    preferred = GENERIC_LLD_DIR / "generic_graph.py"
+    if preferred.is_file():
+        return preferred
+    raise FileNotFoundError(f"Generic LLD entry file not found. Expected: {preferred}")
 
 
 def _ensure_reusableagents_package() -> None:
@@ -266,6 +336,7 @@ class SystemAnalystWorker:
                 run_kwargs["context"] = context
             result = self._agent.run(**run_kwargs)
             output = result.output if hasattr(result, "output") else str(result)
+        _store_agent_chunks("system_analyst", str(output).strip(), context)
         if context is not None and callable(getattr(context, "set_state", None)):
             context.set_state("system_analyst.output", str(output).strip())
             context.record(agent_name="system_analyst_worker", event="completed")
@@ -452,6 +523,7 @@ class LLDWorker:
             }
 
         output = json.dumps(payload, ensure_ascii=True)
+        _store_agent_chunks("lld", output, context)
         if context is not None and callable(getattr(context, "set_state", None)):
             context.set_state("lld.output", output)
             context.record(agent_name="lld_worker", event="completed")
@@ -483,6 +555,7 @@ class SystemArchitectWorker:
             raise RuntimeError("System architect module does not expose run_system_architect")
 
         output = str(run_in_module(input_document=task, context=context)).strip()
+        _store_agent_chunks("system_architect", output, context)
         if context is not None and callable(getattr(context, "set_state", None)):
             context.set_state("system_architect.output", output)
             context.record(agent_name="system_architect_worker", event="completed")
@@ -526,9 +599,237 @@ class FrontendLLDWorker:
         output = result.output if hasattr(result, "output") else str(result)
         output = str(output).strip()
 
+        _store_agent_chunks("frontend_lld", output, context)
         if context is not None and callable(getattr(context, "set_state", None)):
             context.set_state("frontend_lld.output", output)
             context.record(agent_name="frontend_lld_worker", event="completed")
+        return self._agent_response_type(output=output)
+
+
+class BackendLLDWorker:
+    def __init__(self, agent_response_type: Any) -> None:
+        self._agent_response_type = agent_response_type
+
+    def run(self, task: str, context: "AgentContext | None" = None):
+        if context is not None and callable(getattr(context, "record", None)):
+            context.record(
+                agent_name="backend_lld_worker",
+                event="started",
+                detail=str(task)[:160],
+            )
+
+        try:
+            backend_app_path = _resolve_lld_backend_entry_path()
+            runner = textwrap.dedent(
+                """
+                import importlib.util
+                import json
+                import sys
+                import types
+                from pathlib import Path
+
+                adk_root = Path(sys.argv[1])
+                backend_app_path = Path(sys.argv[2])
+                backend_dir = backend_app_path.parent
+
+                payload = {}
+                raw_input = sys.stdin.read()
+                try:
+                    payload = json.loads(raw_input) if raw_input.strip() else {}
+                except json.JSONDecodeError:
+                    payload = {"lld_input": raw_input}
+
+                lld_input = str(payload.get("lld_input", ""))
+                context_state = payload.get("context_state", {})
+
+                if str(backend_dir) not in sys.path:
+                    sys.path.insert(0, str(backend_dir))
+                if str(adk_root) not in sys.path:
+                    sys.path.insert(0, str(adk_root))
+
+                if "reusableagents" not in sys.modules:
+                    pkg = types.ModuleType("reusableagents")
+                    pkg.__path__ = [str(adk_root)]
+                    sys.modules["reusableagents"] = pkg
+
+                prompts_spec = importlib.util.spec_from_file_location(
+                    "prompts",
+                    backend_dir / "prompts.py",
+                )
+                prompts_module = importlib.util.module_from_spec(prompts_spec)
+                sys.modules["prompts"] = prompts_module
+                prompts_spec.loader.exec_module(prompts_module)
+
+                backend_spec = importlib.util.spec_from_file_location(
+                    "backend_runtime",
+                    backend_app_path,
+                )
+                backend_module = importlib.util.module_from_spec(backend_spec)
+                backend_spec.loader.exec_module(backend_module)
+
+                context_obj = None
+                if isinstance(context_state, dict):
+                    try:
+                        context_mod = importlib.import_module("reusableagents.context")
+                        context_obj = context_mod.AgentContext(state=context_state)
+                    except Exception:
+                        context_obj = None
+
+                if context_obj is not None:
+                    output = backend_module.run_backend_lld(lld_input=lld_input, context=context_obj)
+                else:
+                    output = backend_module.run_backend_lld(lld_input=lld_input)
+
+                print(json.dumps({"backend_output": str(output).strip()}))
+                """
+            ).strip()
+
+            context_state: dict[str, Any] = {}
+            if isinstance(getattr(context, "state", None), dict):
+                context_state = dict(context.state)
+
+            lld_input = str(task).strip()
+            if isinstance(getattr(context, "state", None), dict):
+                lld_input = str(context.state.get("lld.final_report", lld_input)).strip() or lld_input
+
+            completed = subprocess.run(
+                [sys.executable, "-c", runner, str(ADK_ROOT), str(backend_app_path)],
+                input=json.dumps({"lld_input": lld_input, "context_state": context_state}, ensure_ascii=True),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            stdout_lines = [line for line in completed.stdout.splitlines() if line.strip()]
+            if not stdout_lines:
+                raise RuntimeError("Backend LLD subprocess produced no output")
+            payload = json.loads(stdout_lines[-1])
+            output = str(payload.get("backend_output", "")).strip()
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            stdout = (exc.stdout or "").strip()
+            details = stderr or stdout or str(exc)
+            output = f"Backend LLD subprocess execution failed: {details}"
+        except Exception as exc:
+            output = f"Backend LLD execution failed: {exc}"
+
+        _store_agent_chunks("backend_lld", output, context)
+        if context is not None and callable(getattr(context, "set_state", None)):
+            context.set_state("backend_lld.output", output)
+            context.record(agent_name="backend_lld_worker", event="completed")
+        return self._agent_response_type(output=output)
+
+
+class GenericLLDWorker:
+    def __init__(self, agent_response_type: Any) -> None:
+        self._agent_response_type = agent_response_type
+
+    def run(self, task: str, context: "AgentContext | None" = None):
+        if context is not None and callable(getattr(context, "record", None)):
+            context.record(
+                agent_name="generic_lld_worker",
+                event="started",
+                detail=str(task)[:160],
+            )
+
+        try:
+            generic_path = _resolve_generic_lld_entry_path()
+            runner = textwrap.dedent(
+                """
+                import importlib.util
+                import json
+                import sys
+                import types
+                from pathlib import Path
+
+                adk_root = Path(sys.argv[1])
+                generic_path = Path(sys.argv[2])
+                generic_dir = generic_path.parent
+
+                payload = {}
+                raw_input = sys.stdin.read()
+                try:
+                    payload = json.loads(raw_input) if raw_input.strip() else {}
+                except json.JSONDecodeError:
+                    payload = {"task": raw_input}
+
+                user_input = str(payload.get("user_input", ""))
+                requirement_doc = str(payload.get("requirement_doc", ""))
+                architecture_doc = str(payload.get("architecture_doc", ""))
+                context_state = payload.get("context_state", {})
+
+                if str(generic_dir) not in sys.path:
+                    sys.path.insert(0, str(generic_dir))
+                if str(adk_root) not in sys.path:
+                    sys.path.insert(0, str(adk_root))
+
+                if "reusableagents" not in sys.modules:
+                    pkg = types.ModuleType("reusableagents")
+                    pkg.__path__ = [str(adk_root)]
+                    sys.modules["reusableagents"] = pkg
+
+                spec = importlib.util.spec_from_file_location("generic_runtime", generic_path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+
+                context_obj = None
+                if isinstance(context_state, dict):
+                    try:
+                        context_mod = importlib.import_module("reusableagents.context")
+                        context_obj = context_mod.AgentContext(state=context_state)
+                    except Exception:
+                        context_obj = None
+
+                agent = module.build_agent()
+                kwargs = {
+                    "user_input": user_input,
+                    "requirement_doc": requirement_doc,
+                    "architecture_doc": architecture_doc,
+                }
+                if context_obj is not None:
+                    kwargs["context"] = context_obj
+
+                result = agent.run(**kwargs)
+                output = result.output if hasattr(result, "output") else str(result)
+                print(json.dumps({"generic_output": str(output).strip()}))
+                """
+            ).strip()
+
+            state = getattr(context, "state", None)
+            state = state if isinstance(state, dict) else {}
+
+            payload = {
+                "user_input": str(state.get("user_goal", task)).strip() or str(task).strip(),
+                "requirement_doc": str(state.get("system_analyst.output", task)).strip() or str(task).strip(),
+                "architecture_doc": str(state.get("backend_lld.output", "")).strip()
+                or str(state.get("lld.final_report", "")).strip()
+                or str(task).strip(),
+                "context_state": dict(state),
+            }
+
+            completed = subprocess.run(
+                [sys.executable, "-c", runner, str(ADK_ROOT), str(generic_path)],
+                input=json.dumps(payload, ensure_ascii=True),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            stdout_lines = [line for line in completed.stdout.splitlines() if line.strip()]
+            if not stdout_lines:
+                raise RuntimeError("Generic LLD subprocess produced no output")
+            output_payload = json.loads(stdout_lines[-1])
+            output = str(output_payload.get("generic_output", "")).strip()
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            stdout = (exc.stdout or "").strip()
+            details = stderr or stdout or str(exc)
+            output = f"Generic LLD subprocess execution failed: {details}"
+        except Exception as exc:
+            output = f"Generic LLD execution failed: {exc}"
+
+        _store_agent_chunks("generic_lld", output, context)
+        if context is not None and callable(getattr(context, "set_state", None)):
+            context.set_state("generic_lld.output", output)
+            context.record(agent_name="generic_lld_worker", event="completed")
         return self._agent_response_type(output=output)
 
 
@@ -566,6 +867,8 @@ def _is_complete_combined_output(text: str) -> bool:
         "LLD Sections",
         "LLD Architecture Analysis",
         "LLD Final Report",
+        "Backend LLD Output",
+        "Generic LLD Output",
     ]
     parsed = _extract_markdown_sections(str(text or ""))
     return all(section in parsed and bool(str(parsed.get(section, "")).strip()) for section in required_sections)
@@ -588,6 +891,10 @@ def _normalize_section_title(title: str) -> str:
         "architecture analysis": "LLD Architecture Analysis",
         "lld final report": "LLD Final Report",
         "final report": "LLD Final Report",
+        "backend lld output": "Backend LLD Output",
+        "backend output": "Backend LLD Output",
+        "generic lld output": "Generic LLD Output",
+        "generic output": "Generic LLD Output",
     }
     return aliases.get(cleaned, "")
 
@@ -631,6 +938,8 @@ def _normalize_orchestrator_output(text: str, user_goal: str) -> str:
         "LLD Sections",
         "LLD Architecture Analysis",
         "LLD Final Report",
+        "Backend LLD Output",
+        "Generic LLD Output",
     ]
     recognized_count = sum(1 for name in recognized_sections if name in parsed)
     if recognized_count < 2:
@@ -644,6 +953,8 @@ def _normalize_orchestrator_output(text: str, user_goal: str) -> str:
         lld_sections=parsed.get("LLD Sections", "").strip(),
         lld_architecture_analysis=parsed.get("LLD Architecture Analysis", "").strip(),
         lld_final_report=parsed.get("LLD Final Report", "").strip(),
+        backend_lld_output=parsed.get("Backend LLD Output", "").strip(),
+        generic_lld_output=parsed.get("Generic LLD Output", "").strip(),
     )
 
 
@@ -668,6 +979,8 @@ def _coerce_partial_orchestrator_output(text: str, user_goal: str) -> str:
     lld_sections = parsed.get("LLD Sections", "").strip()
     lld_arch = parsed.get("LLD Architecture Analysis", "").strip()
     lld_final = parsed.get("LLD Final Report", "").strip()
+    backend_lld_output = parsed.get("Backend LLD Output", "").strip()
+    generic_lld_output = parsed.get("Generic LLD Output", "").strip()
 
     return _render_combined_output(
         user_goal=user_goal_text,
@@ -677,6 +990,8 @@ def _coerce_partial_orchestrator_output(text: str, user_goal: str) -> str:
         lld_sections=lld_sections,
         lld_architecture_analysis=lld_arch,
         lld_final_report=lld_final,
+        backend_lld_output=backend_lld_output,
+        generic_lld_output=generic_lld_output,
     )
 
 
@@ -688,6 +1003,8 @@ def _render_combined_output(
     lld_sections: str,
     lld_architecture_analysis: str,
     lld_final_report: str,
+    backend_lld_output: str,
+    generic_lld_output: str,
 ) -> str:
     return (
         "## User Goal\n\n"
@@ -703,7 +1020,78 @@ def _render_combined_output(
         "## LLD Architecture Analysis\n\n"
         f"{lld_architecture_analysis}\n\n"
         "## LLD Final Report\n\n"
-        f"{lld_final_report}"
+        f"{lld_final_report}\n\n"
+        "## Backend LLD Output\n\n"
+        f"{backend_lld_output}\n\n"
+        "## Generic LLD Output\n\n"
+        f"{generic_lld_output}"
+    ).strip()
+
+
+def _value_or_placeholder(text: str, label: str) -> str:
+    value = str(text or "").strip()
+    if value:
+        return value
+    return f"[No output produced by {label}]"
+
+
+def _render_agent_output_report(context: "AgentContext | None") -> str:
+    state = getattr(context, "state", None)
+    state = state if isinstance(state, dict) else {}
+
+    system_analyst_output = _value_or_placeholder(
+        str(state.get("system_analyst.output", "")),
+        "system_analyst",
+    )
+    system_architect_output = _value_or_placeholder(
+        str(state.get("system_architect.output", "")),
+        "system_architect_agent",
+    )
+    frontend_lld_output = _value_or_placeholder(
+        str(state.get("frontend_lld.output", "")),
+        "frontend_lld_agent",
+    )
+    backend_lld_output = _value_or_placeholder(
+        str(state.get("backend_lld.output", "")),
+        "backend_lld_agent",
+    )
+    generic_lld_output = _value_or_placeholder(
+        str(state.get("generic_lld.output", "")),
+        "generic_lld_agent",
+    )
+
+    lld_output_raw = str(state.get("lld.output", "")).strip()
+    lld_output = lld_output_raw
+    if lld_output_raw:
+        try:
+            parsed = json.loads(lld_output_raw)
+            if isinstance(parsed, dict):
+                lld_output = (
+                    "sections:\n"
+                    + str(parsed.get("sections", "")).strip()
+                    + "\n\narchitecture_analysis:\n"
+                    + str(parsed.get("architecture_analysis", "")).strip()
+                    + "\n\nfinal_report:\n"
+                    + str(parsed.get("final_report", "")).strip()
+                ).strip()
+        except json.JSONDecodeError:
+            lld_output = lld_output_raw
+    lld_output = _value_or_placeholder(lld_output, "lld_agent")
+
+    return (
+        "## Agent Outputs\n\n"
+        "### system_analyst\n\n"
+        f"{system_analyst_output}\n\n"
+        "### system_architect_agent\n\n"
+        f"{system_architect_output}\n\n"
+        "### frontend_lld_agent\n\n"
+        f"{frontend_lld_output}\n\n"
+        "### lld_agent\n\n"
+        f"{lld_output}\n\n"
+        "### backend_lld_agent\n\n"
+        f"{backend_lld_output}\n\n"
+        "### generic_lld_agent\n\n"
+        f"{generic_lld_output}"
     ).strip()
 
 
@@ -766,6 +1154,14 @@ def _canonicalize_combined_output(
         str(lld_dict.get("final_report", "")),
         str(state.get("lld.final_report", "")),
     )
+    backend_lld_output = _pick(
+        parsed.get("Backend LLD Output", ""),
+        str(state.get("backend_lld.output", "")),
+    )
+    generic_lld_output = _pick(
+        parsed.get("Generic LLD Output", ""),
+        str(state.get("generic_lld.output", "")),
+    )
 
     return _render_combined_output(
         user_goal=user_goal_text,
@@ -775,7 +1171,103 @@ def _canonicalize_combined_output(
         lld_sections=lld_sections,
         lld_architecture_analysis=lld_architecture_analysis,
         lld_final_report=lld_final_report,
+        backend_lld_output=backend_lld_output,
+        generic_lld_output=generic_lld_output,
     )
+
+
+def _populate_lld_fields_from_output(context: "AgentContext | None") -> None:
+    if context is None or not callable(getattr(context, "set_state", None)):
+        return
+    state = getattr(context, "state", None)
+    if not isinstance(state, dict):
+        return
+    raw = str(state.get("lld.output", "")).strip()
+    if not raw:
+        return
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(parsed, dict):
+        return
+
+    context.set_state("lld.sections", str(parsed.get("sections", "")).strip())
+    context.set_state(
+        "lld.architecture_analysis",
+        str(parsed.get("architecture_analysis", "")).strip(),
+    )
+    context.set_state("lld.final_report", str(parsed.get("final_report", "")).strip())
+
+
+def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> None:
+    """Run missing worker stages directly so final output always contains all agent sections."""
+    state = getattr(context, "state", None)
+    if not isinstance(state, dict):
+        return
+
+    _, _, AgentResponse, _, _, _, _, _ = _load_adk_components()
+    stage_timeout_seconds = int(os.getenv("SUPERVISOR_STAGE_TIMEOUT_SECONDS", "240"))
+    if stage_timeout_seconds < 30:
+        stage_timeout_seconds = 30
+
+    def _missing(key: str) -> bool:
+        return not str(state.get(key, "")).strip()
+
+    def _run_stage(func: Any, stage_name: str, state_key: str, *args: Any) -> None:
+        completed, result = _run_with_timeout(func, stage_timeout_seconds, *args, context=context)
+        if completed and not isinstance(result, Exception):
+            return
+        message = f"[{stage_name} timed out after {stage_timeout_seconds}s]"
+        if isinstance(result, Exception):
+            message = f"[{stage_name} failed: {result}]"
+        if callable(getattr(context, "set_state", None)):
+            context.set_state(state_key, message)
+            _store_agent_chunks(state_key.replace(".output", ""), message, context)
+
+    if _missing("system_analyst.output"):
+        _run_stage(SystemAnalystWorker(AgentResponse).run, "system_analyst", "system_analyst.output", user_goal)
+
+    analyst_output = str(state.get("system_analyst.output", "")).strip() or user_goal
+    if _missing("system_architect.output"):
+        _run_stage(
+            SystemArchitectWorker(AgentResponse).run,
+            "system_architect_agent",
+            "system_architect.output",
+            analyst_output,
+        )
+
+    architect_output = str(state.get("system_architect.output", "")).strip() or analyst_output
+    if _missing("frontend_lld.output"):
+        _run_stage(
+            FrontendLLDWorker(AgentResponse).run,
+            "frontend_lld_agent",
+            "frontend_lld.output",
+            architect_output,
+        )
+
+    frontend_output = str(state.get("frontend_lld.output", "")).strip() or architect_output
+    if _missing("lld.output"):
+        _run_stage(LLDWorker(AgentResponse).run, "lld_agent", "lld.output", frontend_output)
+    _populate_lld_fields_from_output(context)
+
+    lld_final_report = str(state.get("lld.final_report", "")).strip() or frontend_output
+    if _missing("backend_lld.output"):
+        _run_stage(
+            BackendLLDWorker(AgentResponse).run,
+            "backend_lld_agent",
+            "backend_lld.output",
+            lld_final_report,
+        )
+
+    backend_output = str(state.get("backend_lld.output", "")).strip() or lld_final_report
+    if _missing("generic_lld.output"):
+        _run_stage(
+            GenericLLDWorker(AgentResponse).run,
+            "generic_lld_agent",
+            "generic_lld.output",
+            backend_output,
+        )
 
 
 def build_supervisor_agent():
@@ -794,6 +1286,8 @@ def build_supervisor_agent():
     system_architect_worker = SystemArchitectWorker(AgentResponse)
     frontend_lld_worker = FrontendLLDWorker(AgentResponse)
     lld_worker = LLDWorker(AgentResponse)
+    backend_lld_worker = BackendLLDWorker(AgentResponse)
+    generic_lld_worker = GenericLLDWorker(AgentResponse)
 
     prompt_builder = (
         PromptBuilder()
@@ -804,8 +1298,10 @@ def build_supervisor_agent():
             "2) Pass the FULL system_analyst output as the task input to system_architect_agent. "
             "3) Pass the FULL system_architect_agent output as the task input to frontend_lld_agent. "
             "4) Pass the FULL frontend_lld_agent output as the task input to lld_agent. "
-            "5) Return a combined markdown response with these sections only: "
-            "User Goal, System Analyst Output, System Architect Output, Frontend LLD Output, LLD Sections, LLD Architecture Analysis, LLD Final Report. "
+            "5) Pass the FULL lld_agent output as the task input to backend_lld_agent. "
+            "6) Pass the FULL backend_lld_agent output as the task input to generic_lld_agent. "
+            "7) Return a combined markdown response with these sections only: "
+            "User Goal, System Analyst Output, System Architect Output, Frontend LLD Output, LLD Sections, LLD Architecture Analysis, LLD Final Report, Backend LLD Output, Generic LLD Output. "
             "Do not skip steps and do not invent tool outputs. "
             "If any worker returns an error message, include it verbatim under the corresponding section. "
             "Do not apologize or replace errors with generic text.",
@@ -849,13 +1345,25 @@ def build_supervisor_agent():
                 agent=lld_worker,
                 task_variable="task",
             ),
+            WorkerSpec(
+                name="backend_lld_agent",
+                description="Consumes LLD output and returns backend-oriented LLD output.",
+                agent=backend_lld_worker,
+                task_variable="task",
+            ),
+            WorkerSpec(
+                name="generic_lld_agent",
+                description="Consumes backend output and returns final generic LLD output.",
+                agent=generic_lld_worker,
+                task_variable="task",
+            ),
         ],
         llm=create_agent_llm(gemini_config),
         prompt_builder=prompt_builder,
         config=SupervisorConfig(
             execution_mode=ExecutionMode.SERIAL,
             enable_validation=False,
-            max_iterations=8,
+            max_iterations=10,
         ),
     )
 
@@ -901,13 +1409,23 @@ def main() -> None:
         logger.error("Supervisor orchestrator failed: %s", run_result)
     elif run_result is not None:
         output = str(_extract_output_text(run_result)).strip()
+
+    # Ensure all downstream agent outputs exist even if orchestration stopped early.
+    _ensure_agent_outputs(user_goal=user_goal, context=shared_context)
+    _populate_lld_fields_from_output(shared_context)
+
     output = _normalize_orchestrator_output(output, user_goal)
     output = _canonicalize_combined_output(output, user_goal=user_goal, context=shared_context)
     if output and not _is_complete_combined_output(output):
         output = _coerce_partial_orchestrator_output(output, user_goal)
         output = _canonicalize_combined_output(output, user_goal=user_goal, context=shared_context)
-
-    print(output if str(output).strip() else "No output generated.")
+    agent_report = _render_agent_output_report(shared_context)
+    combined_output = output if str(output).strip() else "No output generated."
+    final_output = f"{agent_report}\n\n---\n\n## Combined Output\n\n{combined_output}".strip()
+    output_file = _write_full_output(final_output)
+    _print_chunked_output(final_output)
+    if output_file is not None:
+        print(f"\nFull output saved to: {output_file}")
 
 
 if __name__ == "__main__":
