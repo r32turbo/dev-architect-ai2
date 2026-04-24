@@ -135,8 +135,37 @@ Focus on static content, performance, SEO, and responsiveness.
 
 
 # ============================================================
-# ✅ RESOLVE INPUT (KEEPED)
+# ✅ CHUNKING UTILITY (ADDED)
 # ============================================================
+
+def chunk_text(text: str, chunk_size: int = 4000, overlap: int = 200) -> list[str]:
+    """
+    Split text into chunks with optional overlap.
+    """
+    if len(text) <= chunk_size:
+        return [text]
+    
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        if end < len(text):
+            # Find a good break point (sentence or word boundary)
+            for i in range(min(overlap, chunk_size)):
+                if end - i > start and text[end - i] in '.!?\n':
+                    end = end - i + 1
+                    break
+            else:
+                # Fallback to word boundary
+                while end > start and text[end - 1] not in ' \t\n':
+                    end -= 1
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        start = end - overlap if overlap > 0 else end
+    
+    return chunks
+
 
 def _resolve_lld_input(
     lld_input: str | None = None,
@@ -154,7 +183,7 @@ def _resolve_lld_input(
 
 
 # ============================================================
-# ✅ RUN AGENT (FIXED → FORCE CLEAN OUTPUT)
+# ✅ RUN AGENT (FIXED → FORCE CLEAN OUTPUT + CHUNKING)
 # ============================================================
 
 def run_backend_lld(
@@ -169,23 +198,52 @@ def run_backend_lld(
     if not resolved_input:
         raise ValueError("lld_input is required")
 
-    run_kwargs = {
-        "task": BACKEND_LLD_TASK,
-        "state": {"lld_input": resolved_input},
-    }
+    # 🔥 CHUNKING: If input is too long, process in chunks
+    chunks = chunk_text(resolved_input, chunk_size=8000, overlap=500)
+    
+    if len(chunks) == 1:
+        # Single chunk, process as before
+        run_kwargs = {
+            "task": BACKEND_LLD_TASK,
+            "state": {"lld_input": resolved_input},
+        }
 
-    if context is not None:
-        run_kwargs["context"] = context
+        if context is not None:
+            run_kwargs["context"] = context
 
-    response = agent.run(**run_kwargs)
+        response = agent.run(**run_kwargs)
+
+        output = (
+            response.output
+            if hasattr(response, "output")
+            else str(response)
+        )
+    else:
+        # Multiple chunks, process each and combine
+        outputs = []
+        for i, chunk in enumerate(chunks):
+            chunk_task = f"{BACKEND_LLD_TASK}\n\nProcessing chunk {i+1}/{len(chunks)}:\n{chunk}"
+            run_kwargs = {
+                "task": chunk_task,
+                "state": {"lld_input": chunk},
+            }
+
+            if context is not None:
+                run_kwargs["context"] = context
+
+            response = agent.run(**run_kwargs)
+
+            chunk_output = (
+                response.output
+                if hasattr(response, "output")
+                else str(response)
+            )
+            outputs.append(chunk_output)
+        
+        # Combine outputs
+        output = "\n\n".join(outputs)
 
     # 🔥 FORCE CLEAN LLD OUTPUT (NO REVIEW TEXT)
-    output = (
-        response.output
-        if hasattr(response, "output")
-        else str(response)
-    )
-
     # 🔥 REMOVE accidental "review-style" phrases
     blacklist = ["review", "strength", "weakness", "analysis"]
     for word in blacklist:
