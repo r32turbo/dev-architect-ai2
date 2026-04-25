@@ -6,22 +6,20 @@ Prompt structure:
   WHO   - role/persona of the agent
   WHAT  - the task it must perform
   WHY   - context and purpose
-  HOW   - desired output format (matches the LLD sample document exactly)
+  HOW   - desired output format
   RULES - constraints and boundaries
   WITH  - input data (user section, dynamic)
 """
 import importlib
-from frontend_configuration import register_agent_adk
 
-register_agent_adk()
-
+# register_agent_adk() is already called in graph.py before this file loads
 PromptBuilder = importlib.import_module("reusableagents.prompts.base").PromptBuilder
 
 
 FRONTEND_LLD_PROMPT = (
     PromptBuilder()
 
-    # ── WHO: Role / Persona ───────────────────────────────────────────────
+    # WHO
     .add_system(
         "You are a senior frontend software architect with deep expertise in "
         "Next.js, React, TypeScript, and Tailwind CSS. You specialize in "
@@ -31,7 +29,7 @@ FRONTEND_LLD_PROMPT = (
         name="persona",
     )
 
-    # ── WHAT + WHY: Task and Context ──────────────────────────────────────
+    # WHAT + WHY
     .add_system(
         "Task:\n"
         "Generate a complete Frontend Low-Level Design (LLD) document by analyzing "
@@ -47,7 +45,7 @@ FRONTEND_LLD_PROMPT = (
         name="task_and_context",
     )
 
-    # ── HOW: Output Format ────────────────────────────────────────────────
+    # HOW
     .add_system(
         "Output Format:\n"
         "Write the document in Markdown exactly matching this structure:\n\n"
@@ -74,10 +72,10 @@ FRONTEND_LLD_PROMPT = (
         "  - Footer Component\n\n"
         "#### Prop Definitions (TypeScript Interfaces)\n"
         "Write TypeScript interfaces in a code block for:\n"
-        "- NavItem: { label: string; href: string }\n"
-        "- ServiceCardProps: { title: string; description: string; icon?: string }\n"
-        "- ContactProps: { address: string; phone: string; email: string; "
-        "socialLinks: { platform: string; url: string }[] }\n\n"
+        "- NavItem: {{ label: string; href: string }}\n"
+        "- ServiceCardProps: {{ title: string; description: string; icon?: string }}\n"
+        "- ContactProps: {{ address: string; phone: string; email: string; "
+        "socialLinks: {{ platform: string; url: string }}[] }}\n\n"
         "#### State Management\n"
         "- Mobile Menu State: isMenuOpen boolean in Navbar.\n"
         "- Scroll Observer: useActiveSection custom hook using Intersection Observer API.\n\n"
@@ -98,7 +96,7 @@ FRONTEND_LLD_PROMPT = (
         "- Offset Handling: JavaScript scroll calculation for fixed Navbar height.\n\n"
         "#### Performance Optimization\n"
         "- Next.js Image (next/image):\n"
-        "  - Hero Image: priority={true} to improve LCP.\n"
+        "  - Hero Image: priority={{true}} to improve LCP.\n"
         "  - Service Icons: width and height attributes to prevent CLS.\n"
         "- Static Generation: SSG pre-renders the entire page at build time.\n\n"
         "---\n\n"
@@ -110,7 +108,7 @@ FRONTEND_LLD_PROMPT = (
         "#### Internal API Routes\n"
         "- Contact Form (Optional): Next.js Route Handler at /api/contact.\n"
         "  - Method: POST\n"
-        "  - Request Body: { name: string, email: string, message: string }\n\n"
+        "  - Request Body: {{ name: string, email: string, message: string }}\n\n"
         "---\n\n"
         "### 5. Visual & Styling System\n\n"
         "State that Tailwind CSS 4.0 is used for mobile-first responsive design.\n\n"
@@ -135,7 +133,7 @@ FRONTEND_LLD_PROMPT = (
         name="output_format",
     )
 
-    # ── RULES: Constraints ────────────────────────────────────────────────
+    # RULES
     .add_system(
         "Constraints:\n"
         "- Base all content strictly on the provided inputs. Do not invent details.\n"
@@ -147,7 +145,7 @@ FRONTEND_LLD_PROMPT = (
         name="constraints",
     )
 
-    # ── WITH: Input Data — dynamic, passed at .run() time ─────────────────
+    # WITH
     .add_user(
         "Here are the inputs to generate the Frontend LLD from:\n\n"
         "## User Request\n"

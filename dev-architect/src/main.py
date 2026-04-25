@@ -16,10 +16,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 # ── Add src/ to path so agents can be found ───────────────────────────────────
-
 BASE_DIR = Path(__file__).resolve().parent
 
-# Add specific folders to Python path
 sys.path.insert(0, str(BASE_DIR / "frontend-lld-agent"))
 sys.path.insert(0, str(BASE_DIR / "generic-lld-agent"))
 
@@ -106,7 +104,8 @@ def generate_frontend_lld(request: LLDRequest):
             history_count=len(ctx.history),
         )
     except Exception as e:
-        logger.error("Error generating Frontend LLD: %s", str(e))
+        import traceback
+        logger.error("Error generating Frontend LLD:\n%s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 
