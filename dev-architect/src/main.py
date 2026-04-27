@@ -2,84 +2,129 @@
 main.py – FastAPI entry point.
 
 Entry points:
-  POST /generate/frontend-lld  → Frontend LLD Agent
-  POST /generate/generic-lld   → Generic LLD Agent
+  POST /generate/frontend-lld  → generates and saves Frontend LLD to DB
+  POST /generate/generic-lld   → generates and saves Generic LLD to DB
+  GET  /documents              → retrieve all saved documents
+  GET  /documents/{id}         → retrieve a specific document by ID
 
 Run:
     uvicorn main:app --reload
 """
+
 import logging
 import sys
 from pathlib import Path
+from typing import List
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
-# ── Add src/ to path so agents can be found ───────────────────────────────────
+# ── Add folders to Python path ────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 
 sys.path.insert(0, str(BASE_DIR / "frontend-lld-agent"))
 sys.path.insert(0, str(BASE_DIR / "generic-lld-agent"))
+sys.path.insert(0, str(BASE_DIR / "database"))
 
+# Frontend Agent
 from frontend_graph import build_agent as build_frontend_agent
 from frontend_graph import create_context as create_frontend_context
 
+# Generic Agent
 from generic_graph import build_agent as build_generic_agent
 from generic_graph import create_context as create_generic_context
+
+# Database
+from db import (
+    init_db,
+    get_db,
+    save_lld_document,
+    get_lld_document,
+    get_all_lld_documents,
+)
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s – %(message)s",
+    format="%(asctime)s %(levelname)-8s %(name)s - %(message)s",
 )
+
 logger = logging.getLogger(__name__)
 
-# ── FastAPI app ───────────────────────────────────────────────────────────────
+# ── FastAPI App ───────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Dev Architect API",
-    description="Generates LLD documents from a user prompt.",
+    description="Generates and stores LLD documents using AI agents",
     version="1.0.0",
 )
 
-# ── Build agents once at startup ──────────────────────────────────────────────
-logger.info("Building agents ...")
-frontend_agent = build_frontend_agent()
-generic_agent  = build_generic_agent()
-logger.info("All agents ready.")
+# Global agents
+frontend_agent = None
+generic_agent = None
 
 
-# ── Request / Response schemas ────────────────────────────────────────────────
+# ── Startup Event ─────────────────────────────────────────────────────────────
+@app.on_event("startup")
+def startup():
+    global frontend_agent, generic_agent
 
+    logger.info("Initializing database...")
+    init_db()
+
+    logger.info("Building agents...")
+    frontend_agent = build_frontend_agent()
+    generic_agent = build_generic_agent()
+
+    logger.info("All agents ready.")
+
+
+# ── Pydantic Models ───────────────────────────────────────────────────────────
 class LLDRequest(BaseModel):
     user_input: str
     requirement_doc: str = ""
     architecture_doc: str = ""
 
 
-class FrontendLLDResponse(BaseModel):
-    frontend_lld: str
+class LLDDocumentResponse(BaseModel):
+    id: int
+    agent_type: str
+    user_input: str
+    output: str
     session_id: str
-    history_count: int
+    created_at: str
 
-
-class GenericLLDResponse(BaseModel):
-    generic_lld: str
-    session_id: str
-    history_count: int
+    class Config:
+        from_attributes = True
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "Dev Architect API is running."}
+    return {
+        "status": "ok",
+        "message": "Dev Architect API is running"
+    }
 
 
-@app.post("/generate/frontend-lld", response_model=FrontendLLDResponse)
-def generate_frontend_lld(request: LLDRequest):
-    """Generate a Frontend LLD document from user prompt and optional docs."""
-    logger.info("Received /generate/frontend-lld: %s", request.user_input)
+@app.post(
+    "/generate/frontend-lld",
+    response_model=LLDDocumentResponse
+)
+def generate_frontend_lld(
+    request: LLDRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Generate Frontend LLD and save to database.
+    """
     try:
+        logger.info(
+            "Received frontend LLD request: %s",
+            request.user_input
+        )
+
         ctx = create_frontend_context(
             user_id="api-user",
             session_metadata={
@@ -87,33 +132,58 @@ def generate_frontend_lld(request: LLDRequest):
                 "endpoint": "/generate/frontend-lld",
             },
         )
+
         response = frontend_agent.run(
             context=ctx,
             user_input=request.user_input,
             requirement_doc=request.requirement_doc,
             architecture_doc=request.architecture_doc,
         )
-        logger.info(
-            "Frontend LLD generated. Score: %.2f | History: %d entries",
-            response.validation_score or 0,
-            len(ctx.history),
+
+        doc = save_lld_document(
+            db=db,
+            agent_type="frontend_lld",
+            user_input=request.user_input,
+            output=response.output,
+            requirement_doc=request.requirement_doc,
+            architecture_doc=request.architecture_doc,
+            session_id=str(ctx.session.session_id),
         )
-        return FrontendLLDResponse(
-            frontend_lld=response.output,
-            session_id=ctx.session.session_id,
-            history_count=len(ctx.history),
+
+        return LLDDocumentResponse(
+            id=doc.id,
+            agent_type=doc.agent_type,
+            user_input=doc.user_input,
+            output=doc.output,
+            session_id=doc.session_id or "",
+            created_at=str(doc.created_at),
         )
+
     except Exception as e:
-        import traceback
-        logger.error("Error generating Frontend LLD:\n%s", traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Frontend LLD generation failed")
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 
-@app.post("/generate/generic-lld", response_model=GenericLLDResponse)
-def generate_generic_lld(request: LLDRequest):
-    """Generate a Generic LLD document from user prompt and optional docs."""
-    logger.info("Received /generate/generic-lld: %s", request.user_input)
+@app.post(
+    "/generate/generic-lld",
+    response_model=LLDDocumentResponse
+)
+def generate_generic_lld(
+    request: LLDRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Generate Generic LLD and save to database.
+    """
     try:
+        logger.info(
+            "Received generic LLD request: %s",
+            request.user_input
+        )
+
         ctx = create_generic_context(
             user_id="api-user",
             session_metadata={
@@ -121,22 +191,98 @@ def generate_generic_lld(request: LLDRequest):
                 "endpoint": "/generate/generic-lld",
             },
         )
+
         response = generic_agent.run(
             context=ctx,
             user_input=request.user_input,
             requirement_doc=request.requirement_doc,
             architecture_doc=request.architecture_doc,
         )
-        logger.info(
-            "Generic LLD generated. Score: %.2f | History: %d entries",
-            response.validation_score or 0,
-            len(ctx.history),
+
+        doc = save_lld_document(
+            db=db,
+            agent_type="generic_lld",
+            user_input=request.user_input,
+            output=response.output,
+            requirement_doc=request.requirement_doc,
+            architecture_doc=request.architecture_doc,
+            session_id=str(ctx.session.session_id),
         )
-        return GenericLLDResponse(
-            generic_lld=response.output,
-            session_id=ctx.session.session_id,
-            history_count=len(ctx.history),
+
+        return LLDDocumentResponse(
+            id=doc.id,
+            agent_type=doc.agent_type,
+            user_input=doc.user_input,
+            output=doc.output,
+            session_id=doc.session_id or "",
+            created_at=str(doc.created_at),
         )
+
     except Exception as e:
-        logger.error("Error generating Generic LLD: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Generic LLD generation failed")
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+
+@app.get(
+    "/documents",
+    response_model=List[LLDDocumentResponse]
+)
+def list_documents(
+    agent_type: str = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Get all saved documents.
+    Optional filter by agent_type.
+    """
+    docs = get_all_lld_documents(
+        db=db,
+        agent_type=agent_type
+    )
+
+    return [
+        LLDDocumentResponse(
+            id=doc.id,
+            agent_type=doc.agent_type,
+            user_input=doc.user_input,
+            output=doc.output,
+            session_id=doc.session_id or "",
+            created_at=str(doc.created_at),
+        )
+        for doc in docs
+    ]
+
+
+@app.get(
+    "/documents/{doc_id}",
+    response_model=LLDDocumentResponse
+)
+def get_document(
+    doc_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Get single document by ID.
+    """
+    doc = get_lld_document(
+        db=db,
+        doc_id=doc_id
+    )
+
+    if not doc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document {doc_id} not found"
+        )
+
+    return LLDDocumentResponse(
+        id=doc.id,
+        agent_type=doc.agent_type,
+        user_input=doc.user_input,
+        output=doc.output,
+        session_id=doc.session_id or "",
+        created_at=str(doc.created_at),
+    )
