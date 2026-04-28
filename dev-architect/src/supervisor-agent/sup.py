@@ -54,6 +54,64 @@ if str(ADK_ROOT) not in sys.path:
 
 logger = logging.getLogger(__name__)
 
+# Configure root logger to write to a single overwrite file per run and to stdout.
+try:
+    log_path_env = os.getenv("SUPERVISOR_OUTPUT_PATH", "").strip()
+    if log_path_env:
+        candidate = Path(log_path_env)
+        if candidate.is_dir():
+            log_file_path = candidate / "sup_output.txt"
+        else:
+            log_file_path = candidate
+    else:
+        log_file_path = WORKSPACE_ROOT / "sup_output.txt"
+
+    # Ensure parent exists
+    log_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    file_handler = logging.FileHandler(log_file_path, mode="w", encoding="utf-8")
+    # Use original stdout so we can safely replace sys.stdout later
+    stream_handler = logging.StreamHandler(sys.__stdout__)
+    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    file_handler.setFormatter(formatter)
+    stream_handler.setFormatter(formatter)
+
+    root_logger = logging.getLogger()
+    # Replace existing handlers so repeated imports don't duplicate output
+    root_logger.handlers = [file_handler, stream_handler]
+    root_logger.setLevel(logging.INFO)
+    logger.info("Supervisor logging initialized, writing to %s", str(log_file_path))
+except Exception:
+    # If logging configuration fails, continue without file logging
+    logger.exception("Failed to configure file logging for supervisor output")
+else:
+    try:
+        # Tee printed output (print/print-like) to the same file so plain prints are captured.
+        class _Tee:
+            def __init__(self, *streams):
+                self._streams = streams
+
+            def write(self, data):
+                for s in self._streams:
+                    try:
+                        s.write(data)
+                    except Exception:
+                        pass
+
+            def flush(self):
+                for s in self._streams:
+                    try:
+                        s.flush()
+                    except Exception:
+                        pass
+
+        # Open a separate file object for plain text writes (append to avoid truncating logging header)
+        file_obj = open(log_file_path, mode="a", encoding="utf-8")
+        sys.stdout = _Tee(sys.__stdout__, file_obj)
+        sys.stderr = _Tee(sys.__stderr__, file_obj)
+    except Exception:
+        logger.exception("Failed to tee stdout/stderr to supervisor log file")
+
 
 def _resolve_chunk_size() -> int:
     value = str(os.getenv("SUPERVISOR_OUTPUT_CHUNK_SIZE", "6000")).strip()
