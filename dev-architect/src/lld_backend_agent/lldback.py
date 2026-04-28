@@ -12,32 +12,8 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from prompts import BACKEND_LLD_PROMPT, BACKEND_LLD_TASK
-
-if TYPE_CHECKING:
-    from reusableagents.context import AgentContext  # type: ignore
-
-
 # ============================================================
-# ✅ LOGGER (KEEPED)
-# ============================================================
-
-logging.basicConfig(
-    level=logging.ERROR,
-    format="%(message)s",
-)
-logger = logging.getLogger(__name__)
-
-
-# ============================================================
-# ✅ WARNINGS (KEEPED)
-# ============================================================
-
-warnings.filterwarnings("ignore", category=Warning)
-
-
-# ============================================================
-# ✅ REGISTER ADK (KEEPED)
+# ✅ REGISTER ADK (MOVED UP)
 # ============================================================
 
 def register_agent_adk():
@@ -58,6 +34,11 @@ def register_agent_adk():
 
 
 register_agent_adk()
+
+from prompts import BACKEND_LLD_PROMPT, BACKEND_LLD_TASK
+
+if TYPE_CHECKING:
+    from reusableagents.context import AgentContext  # type: ignore
 
 
 # ============================================================
@@ -203,8 +184,10 @@ def run_backend_lld(
     
     if len(chunks) == 1:
         # Single chunk, process as before
+        task = BACKEND_LLD_TASK.format(lld_input=resolved_input)
+
         run_kwargs = {
-            "task": BACKEND_LLD_TASK,
+            "task": task,
             "state": {"lld_input": resolved_input},
         }
 
@@ -222,7 +205,10 @@ def run_backend_lld(
         # Multiple chunks, process each and combine
         outputs = []
         for i, chunk in enumerate(chunks):
-            chunk_task = f"{BACKEND_LLD_TASK}\n\nProcessing chunk {i+1}/{len(chunks)}:\n{chunk}"
+            chunk_task = BACKEND_LLD_TASK.format(lld_input=chunk)
+            chunk_task = (
+                f"{chunk_task}\n\nProcessing chunk {i+1}/{len(chunks)}:\n{chunk}"
+            )
             run_kwargs = {
                 "task": chunk_task,
                 "state": {"lld_input": chunk},
