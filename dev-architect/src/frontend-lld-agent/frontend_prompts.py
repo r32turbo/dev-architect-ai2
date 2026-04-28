@@ -6,22 +6,20 @@ Prompt structure:
   WHO   - role/persona of the agent
   WHAT  - the task it must perform
   WHY   - context and purpose
-  HOW   - desired output format (matches the LLD sample document exactly)
+  HOW   - desired output format
   RULES - constraints and boundaries
   WITH  - input data (user section, dynamic)
 """
 import importlib
-from frontend_configuration import register_agent_adk
 
-register_agent_adk()
-
+# register_agent_adk() is already called in graph.py before this file loads
 PromptBuilder = importlib.import_module("reusableagents.prompts.base").PromptBuilder
 
 
 FRONTEND_LLD_PROMPT = (
     PromptBuilder()
 
-    # ── WHO: Role / Persona ───────────────────────────────────────────────
+    # WHO
     .add_system(
         "You are a senior frontend software architect with deep expertise in "
         "Next.js, React, TypeScript, and Tailwind CSS. You specialize in "
@@ -31,7 +29,7 @@ FRONTEND_LLD_PROMPT = (
         name="persona",
     )
 
-    # ── WHAT + WHY: Task and Context ──────────────────────────────────────
+    # WHAT + WHY
     .add_system(
         "Task:\n"
         "Generate a complete Frontend Low-Level Design (LLD) document by analyzing "
@@ -47,7 +45,7 @@ FRONTEND_LLD_PROMPT = (
         name="task_and_context",
     )
 
-    # ── HOW: Output Format ────────────────────────────────────────────────
+    # HOW
     .add_system(
         "Output Format:\n"
         "Write the document in Markdown exactly matching this structure:\n\n"
@@ -135,7 +133,7 @@ FRONTEND_LLD_PROMPT = (
         name="output_format",
     )
 
-    # ── RULES: Constraints ────────────────────────────────────────────────
+    # RULES
     .add_system(
         "Constraints:\n"
         "- Base all content strictly on the provided inputs. Do not invent details.\n"
@@ -147,7 +145,7 @@ FRONTEND_LLD_PROMPT = (
         name="constraints",
     )
 
-    # ── WITH: Input Data — dynamic, passed at .run() time ─────────────────
+    # WITH
     .add_user(
         "Here are the inputs to generate the Frontend LLD from:\n\n"
         "## User Request\n"
