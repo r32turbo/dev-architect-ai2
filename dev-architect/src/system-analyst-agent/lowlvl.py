@@ -3,16 +3,34 @@ from typing import TypedDict
 from pathlib import Path
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import HumanMessage
-from langchain_groq import ChatGroq
+import importlib
+import os
+
+# Lazy initialize LLM — prefer Google Gemini used elsewhere in the project.
+_LLM = None
+
+def get_llm():
+    global _LLM
+    if _LLM is not None:
+        return _LLM
+
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if gemini_key:
+        try:
+            mod = importlib.import_module("langchain_google_genai")
+            ChatGoogleGenerativeAI = getattr(mod, "ChatGoogleGenerativeAI")
+        except Exception as e:
+            raise RuntimeError("Failed to import langchain_google_genai: " + str(e))
+
+        _LLM = ChatGoogleGenerativeAI(model=os.getenv("GEMINI_MODEL", "gemini-1.0"), api_key=gemini_key)
+        return _LLM
+
+    raise RuntimeError(
+        "No LLM provider configured for system-analyst-agent. Set GEMINI_API_KEY to use Google Gemini."
+    )
 from dotenv import load_dotenv
 
 load_dotenv()
-
-# Initialize LLM
-llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    temperature=0
-)
 
 
 # -------------------------
@@ -71,7 +89,7 @@ Component Hierarchy:
 App → Navigation → Services → Footer
 """
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    response = get_llm().invoke([HumanMessage(content=prompt)])
 
     return {"sections": response.content}
 
@@ -117,7 +135,7 @@ The architecture separates UI components from
 data models, improving maintainability.
 """
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    response = get_llm().invoke([HumanMessage(content=prompt)])
 
     return {"architecture_analysis": response.content}
 
@@ -176,7 +194,7 @@ The Service model correctly encapsulates
 service-related attributes.
 """
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    response = get_llm().invoke([HumanMessage(content=prompt)])
 
     return {"final_report": response.content}
 

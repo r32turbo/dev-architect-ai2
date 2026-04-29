@@ -1,114 +1,90 @@
-SECTION_EXTRACTION_PROMPT = """Persona:
-You are a Senior Software Architect specializing in
-software design documentation.
+SECTION_EXTRACTION_PROMPT = """Role:
+You are a website low-level design engineer.
 
-Context:
-You are given a Low Level Design (LLD) document that
-describes an AI agent system. The document may contain
-sections such as agent goals, planner/executor flow,
-tool interfaces, memory strategy, state schema,
-guardrails, evaluation metrics, and deployment details.
+Goal:
+Produce implementation inputs that stay tightly aligned to the exact user goal.
 
-Task:
-Identify and extract the major agent-architecture
-sections from the document.
+Original User Goal:
+{user_goal}
 
 Input Document:
 {document}
 
-Constraints:
-- Return structured sections
-- Use bullet points
-- Keep the content concise
-- Prefer agent-specific headings where possible
+Task:
+Extract only concrete build requirements from the input.
 
-Example Output:
-
-Agent Objective:
-What the agent is expected to do.
-
-Core Workflow:
-Input Parser -> Planner -> Tool Executor -> Response Composer
-
-Tooling and Memory:
-Tool Registry, Retrieval Store, Session Memory
+Output Rules:
+- Output Markdown only.
+- Start with heading: Website Objective.
+- Then provide these headings exactly in order:
+	1) Core Sections
+	2) Data and Content Requirements
+	3) Integration and Styling Requirements
+	4) Non-Functional Constraints
+- Use short bullet points with actionable statements.
+- Keep each bullet specific to the user goal and provided input.
+- Do not add strengths, gaps, critiques, missing-items lists, or recommendations.
+- Do not invent stack details that are not present in the input.
 """
 
-ARCHITECTURE_ANALYSIS_PROMPT = """Persona:
-You are a Principal Software Architect performing
-a technical design review.
+ARCHITECTURE_ANALYSIS_PROMPT = """Role:
+You are a principal engineer converting extracted requirements into implementation decisions.
 
-Context:
-The following sections were extracted from a Low
-Level Design document of an AI agent system.
-
-Task:
-Analyze the architecture and evaluate:
-
-1. Agent workflow design (planner, executor, reflection)
-2. State and memory design (short/long term, persistence)
-3. Tooling contracts (input/output schema, retries, timeout)
-4. Safety and guardrails (prompt injection, policy checks)
-5. Evaluation and observability (metrics, tracing, tests)
+Original User Goal:
+{user_goal}
 
 Input Sections:
 {sections}
 
-Constraints:
-- Focus on architectural quality
-- Identify strengths and weaknesses
-- Provide technical reasoning
-- Explicitly call out missing agent-critical elements
+Task:
+Generate a build-plan document, not a review.
 
-Example:
-
-Workflow Analysis:
-The planner and executor are separated, which improves
-maintainability and makes retries safer.
+Output Rules:
+- Output Markdown only.
+- Use this title: Technical Implementation Plan.
+- Provide these sections exactly:
+	1) Component Assembly Plan
+	2) Data Contracts and State Flow
+	3) API and Integration Contracts
+	4) Rendering, Performance, and Accessibility Decisions
+	5) Error Handling and Operational Safeguards
+- For each section, provide direct implementation decisions and ordered steps.
+- Keep all content grounded in the user goal and input sections.
+- Do not use "strengths", "gaps", "missing elements", or audit language.
 """
 
-REPORT_GENERATION_PROMPT = """Persona:
-You are a Senior Software Architecture Reviewer.
+REPORT_GENERATION_PROMPT = """Role:
+You are a senior software architect writing the final implementation-ready low-level design.
 
-Context:
-An architecture analysis of a Low Level Design
-document has been completed.
+Original User Goal:
+{user_goal}
 
-Task:
-Generate a structured LLD Review Report for an
-AI agent design.
-
-Input Analysis:
+Input Plan:
 {analysis}
 
-Constraints:
-- Output must be in Markdown
-- Use clear headings
-- Provide actionable improvement suggestions
+Task:
+Generate the final LLD document that a team can implement directly.
 
-Output Structure:
-
-# LLD Review Report
-
-## Document Overview
-
-## Agent Workflow Analysis
-
-## State and Memory Design Review
-
-## Tooling and Integration Review
-
-## Safety and Guardrails Review
-
-## Evaluation, Testing, and Observability
-
-## Missing Elements
-
-## Improvement Recommendations
-
-Example:
-
-## Tooling and Integration Review
-Tool schemas are defined, but retry policy and timeout
-budgets are missing.
+Output Rules:
+- Output Markdown only.
+- Start with title: # LLD REPORT
+- The first content after the title must be an opening block with exactly these 3 labeled paragraphs in order:
+	1) Goal Summary:
+	2) Scope:
+	3) Implementation Focus:
+- Each paragraph must be 2 sentences long and together they must fully introduce the document.
+- Do not start with generic boilerplate such as "This document outlines..." or "This report describes...".
+- Include these sections exactly in order:
+	1) Goal Summary and Scope
+	2) Final Component Blueprint
+	3) Data Models and Interface Schemas
+	4) API Endpoints and Validation Rules
+	5) Styling, Responsiveness, and SEO Implementation Notes
+	6) Failure Handling, Monitoring, and Runbook Notes
+- Keep the opening block specific, complete, and tied to the provided user goal.
+- The opening block must mention the website type, the implementation target, and the main functional areas covered later in the report.
+- Include compact TypeScript interfaces where schemas are required.
+- Include numbered implementation steps for critical flows.
+- Do not include critique sections or recommendation sections.
+- Do not output placeholder text such as "add as needed" or "example".
 """
