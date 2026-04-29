@@ -13,6 +13,23 @@ Requirements Document:
 Architecture Document:
 {architecture_doc}
 
+Note: The Requirements Document and Architecture Document are supplementary
+context. They should be used to inform and enrich the analysis but must NOT
+replace or override the Primary User Goal. Keep the final output strictly
+aligned to the Primary User Goal above.
+
+Equal Treatment Requirement:
+You MUST treat the following three inputs as first-class, equal sources of truth:
+1) Primary User Goal
+2) Requirements Document
+3) Architecture Document
+
+Include a dedicated section titled "Balanced Synthesis" that explicitly explains
+how each of the three inputs influenced the decisions in the rest of the
+document (short paragraph for each input). The final output must integrate
+insights from all three sources and clearly indicate which source contributed
+which decisions.
+
 Include in your analysis:
 1. **Project Goal** - Clear statement of what needs to be built
 2. **Scope** - What's included and excluded from this project
@@ -36,6 +53,7 @@ Hard constraints:
 Output format (use these headings exactly):
 ## System Requirements and Design Specification
 ## Introduction
+## Supporting Documents Summary
 ## Project Goal
 ## Scope
 ## Functional Requirements

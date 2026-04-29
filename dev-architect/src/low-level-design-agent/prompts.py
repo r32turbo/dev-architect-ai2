@@ -16,6 +16,11 @@ Requirements Document:
 Architecture Document:
 {architecture_doc}
 
+Balanced Input Requirement:
+Treat the Original User Goal, Requirements Document, and Architecture Document as equally important sources. Use all three together to derive the extracted sections, and do not allow any one source to override the others.
+
+Note: Treat the Original User Goal, Requirements Document, and Architecture Document as equally important inputs. Synthesize them together — do not let one override the other.
+
 Task:
 Extract only concrete build requirements from the input.
 
@@ -47,6 +52,9 @@ Requirements Document:
 
 Architecture Document:
 {architecture_doc}
+
+Balanced Input Requirement:
+Treat the Original User Goal, Requirements Document, and Architecture Document as equally important. The analysis must reconcile all three sources and clearly reflect how each one influenced the decisions.
 
 Task:
 Generate a build-plan document, not a review.
@@ -80,6 +88,9 @@ Requirements Document:
 Architecture Document:
 {architecture_doc}
 
+Balanced Input Requirement:
+Treat the Original User Goal, Requirements Document, and Architecture Document as equally important sources. The final LLD must synthesize all three and make the influence of each source visible in the document.
+
 Task:
 Generate the final LLD document that a team can implement directly.
 
@@ -105,4 +116,5 @@ Output Rules:
 - Include numbered implementation steps for critical flows.
 - Do not include critique sections or recommendation sections.
 - Do not output placeholder text such as "add as needed" or "example".
+- Include a short "Balanced Synthesis" subsection in the opening block that states how the user goal, requirements document, and architecture document each shaped the final LLD.
 """

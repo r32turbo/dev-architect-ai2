@@ -323,33 +323,57 @@ def run_system_analysis(
 
     chunk_outputs: list[str] = []
     for idx, chunk in enumerate(goal_chunks):
-        # Build a user-turn that includes supporting documents so the LLM
-        # explicitly receives them as part of the analysis input (this helps
-        # ensure they become part of the generated content rather than being
-        # merely appended later).
-        docs_prefix = ""
+        # Build a user-turn that keeps the user goal as the primary instruction
+        # and appends supporting documents explicitly as supplementary context.
+        # This prevents the supporting docs from overriding the goal while
+        # still making them available to the LLM.
+        docs_suffix = ""
         try:
             if context is not None and isinstance(getattr(context, "state", None), dict):
                 req_doc = str(context.state.get("requirement_doc", "") or "").strip()
                 arch_doc = str(context.state.get("architecture_doc", "") or "").strip()
                 if req_doc or arch_doc:
-                    parts = ["Supporting documents:"]
+                    parts = ["Supplementary documents (reference only; DO NOT replace the user goal):"]
                     if req_doc:
                         parts.append("Requirements:\n" + req_doc)
                     if arch_doc:
                         parts.append("Architecture:\n" + arch_doc)
-                    docs_prefix = "\n\n".join(parts) + "\n\n"
+                    docs_suffix = "\n\n" + "\n\n".join(parts)
         except Exception:
-            docs_prefix = ""
+            docs_suffix = ""
+
+        # Build a structured inputs block that presents all three inputs equally.
+        try:
+            ctx_state = getattr(context, "state", {}) if context is not None else {}
+            req_doc = str(ctx_state.get("requirement_doc", "") or "").strip()
+            arch_doc = str(ctx_state.get("architecture_doc", "") or "").strip()
+        except Exception:
+            req_doc = ""
+            arch_doc = ""
+
+        inputs_block = f"""Inputs (treat all three equally):
+
+    Primary User Goal:
+    {resolved_goal}
+
+    Requirements Document:
+    {req_doc}
+
+    Architecture Document:
+    {arch_doc}
+
+    Instruction: Consider each input as equally important. When you make design or decision statements, explicitly indicate which input(s) influenced that decision.
+
+    """
 
         run_input = (
-            f"Original goal:\n{resolved_goal}\n\n"
             f"Analyze this goal chunk ({idx + 1}/{len(goal_chunks)}):\n{chunk}"
             if len(goal_chunks) > 1
             else resolved_goal
         )
 
-        run_kwargs = {"user_goal": docs_prefix + run_input}
+        # Provide the structured inputs first (so the model sees them together), then the analysis task.
+        run_kwargs = {"user_goal": inputs_block + run_input}
         if context is not None:
             run_kwargs["context"] = context
 

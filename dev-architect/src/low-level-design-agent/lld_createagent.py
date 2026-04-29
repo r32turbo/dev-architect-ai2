@@ -240,11 +240,18 @@ validator = OutputValidator(
 react_prompt = (
     PromptBuilder()
     .add_system(
-        "You are a precise low-level design generator for a one-page marketing website. "
-        "Follow the task exactly and return only the requested output.",
+        "You are a precise low-level design generator. Follow the task exactly, "
+        "treat the user goal, requirements document, and architecture document "
+        "as equally important inputs, and return only the requested output.",
         name="persona",
     )
-    .add_user("{task}", name="task")
+    .add_user(
+        "{task}\n\n"
+        "Balanced Input Requirement: Keep the user goal, requirements document, "
+        "and architecture document in balance. Do not let any one source override "
+        "the others.",
+        name="task",
+    )
 )
 
 react_agent = ReusableReActAgent(
