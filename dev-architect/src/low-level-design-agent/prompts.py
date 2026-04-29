@@ -10,6 +10,12 @@ Original User Goal:
 Input Document:
 {document}
 
+Requirements Document:
+{requirement_doc}
+
+Architecture Document:
+{architecture_doc}
+
 Task:
 Extract only concrete build requirements from the input.
 
@@ -36,6 +42,12 @@ Original User Goal:
 Input Sections:
 {sections}
 
+Requirements Document:
+{requirement_doc}
+
+Architecture Document:
+{architecture_doc}
+
 Task:
 Generate a build-plan document, not a review.
 
@@ -61,6 +73,12 @@ Original User Goal:
 
 Input Plan:
 {analysis}
+
+Requirements Document:
+{requirement_doc}
+
+Architecture Document:
+{architecture_doc}
 
 Task:
 Generate the final LLD document that a team can implement directly.

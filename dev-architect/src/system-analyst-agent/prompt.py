@@ -5,7 +5,13 @@ Your role is to analyze user goals and produce comprehensive system requirements
 Task: Analyze the following user goal and produce a detailed system requirements and design specification.
 
 Primary User Goal:
-{user_goal}
+{{user_goal}}
+
+Requirements Document:
+{requirement_doc}
+
+Architecture Document:
+{architecture_doc}
 
 Include in your analysis:
 1. **Project Goal** - Clear statement of what needs to be built

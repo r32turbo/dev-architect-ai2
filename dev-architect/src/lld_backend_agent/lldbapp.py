@@ -11,19 +11,41 @@ def run_backend_lld(lld_input: str | None = None, context: Any | None = None) ->
     """
     try:
         input_text = (str(lld_input) or "").strip()
-        if input_text:
-            output = (
-                "Backend LLD placeholder: received input.\n"
-                "This is a minimal stub implementation. Replace with real backend LLD.\n\n"
-                f"Received input:\n{input_text}\n"
-            )
-        else:
-            output = (
-                "Backend LLD placeholder: no input provided.\n"
-                "Replace this stub with the real lld_backend agent implementation."
-            )
 
-        return output
+        # Allow context to be either an AgentContext-like object or a plain dict
+        requirement_doc = None
+        architecture_doc = None
+        try:
+            if context is not None:
+                # If it's a dict-like mapping
+                if isinstance(context, dict):
+                    requirement_doc = context.get("requirement_doc")
+                    architecture_doc = context.get("architecture_doc")
+                else:
+                    # Fallback: try attribute access (AgentContext)
+                    requirement_doc = getattr(context, "requirement_doc", None)
+                    architecture_doc = getattr(context, "architecture_doc", None)
+        except Exception:
+            requirement_doc = None
+            architecture_doc = None
+
+        parts = []
+        parts.append("Backend LLD placeholder: received input." if input_text else "Backend LLD placeholder: no input provided.")
+        parts.append("This is a minimal stub implementation. Replace with real backend LLD.")
+
+        if input_text:
+            parts.append("Received input:")
+            parts.append(input_text)
+
+        if requirement_doc:
+            parts.append("\nRequirement doc (provided to backend):")
+            parts.append(str(requirement_doc))
+
+        if architecture_doc:
+            parts.append("\nArchitecture doc (provided to backend):")
+            parts.append(str(architecture_doc))
+
+        return "\n".join(parts)
 
     except Exception as e:
         return f"Backend LLD stub error: {e}"
@@ -40,7 +62,13 @@ def main():
             payload = {"lld_input": raw}
 
         lld_input = payload.get("lld_input", "")
-        backend_output = run_backend_lld(lld_input=lld_input)
+        # Pass supporting docs through to the backend if provided
+        requirement_doc = payload.get("requirement_doc")
+        architecture_doc = payload.get("architecture_doc")
+        backend_output = run_backend_lld(lld_input=lld_input, context={
+            "requirement_doc": requirement_doc,
+            "architecture_doc": architecture_doc,
+        })
 
         # Emit JSON so the supervisor subprocess wrapper can parse it
         print(json.dumps({"backend_lld_output": str(backend_output).strip(), "status": "placeholder"}))

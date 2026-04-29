@@ -317,7 +317,15 @@ def generate_low_level_design(
 
         ctx = AgentContext(state={"user_goal": request.user_input})
 
-        result = run_lld_pipeline(request.user_input, context=ctx)
+        ctx.state["requirement_doc"] = request.requirement_doc
+        ctx.state["architecture_doc"] = request.architecture_doc
+
+        result = run_lld_pipeline(
+            request.user_input,
+            requirement_doc=request.requirement_doc,
+            architecture_doc=request.architecture_doc,
+            context=ctx,
+        )
         final_report = str(result.get("final_report", "")).strip()
 
         doc = save_lld_document(
@@ -361,7 +369,11 @@ def generate_supervisor(
         if supervisor_agent is None:
             raise RuntimeError("Supervisor agent not initialized")
 
-        ctx = AgentContext(state={"user_goal": request.user_input})
+        ctx = AgentContext(state={
+            "user_goal": request.user_input,
+            "requirement_doc": request.requirement_doc,
+            "architecture_doc": request.architecture_doc,
+        })
 
         response = supervisor_agent.run(task=request.user_input, context=ctx)
         raw_output = response.output if hasattr(response, "output") else str(response)
