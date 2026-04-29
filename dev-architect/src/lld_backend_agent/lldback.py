@@ -35,7 +35,7 @@ def register_agent_adk():
 
 register_agent_adk()
 
-from prompts import BACKEND_LLD_PROMPT, BACKEND_LLD_TASK
+from .prompts import BACKEND_LLD_PROMPT, BACKEND_LLD_TASK
 
 if TYPE_CHECKING:
     from reusableagents.context import AgentContext  # type: ignore

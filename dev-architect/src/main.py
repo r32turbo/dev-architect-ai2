@@ -4,6 +4,8 @@ main.py – FastAPI entry point.
 Entry points:
   POST /generate/frontend-lld  → generates and saves Frontend LLD to DB
   POST /generate/generic-lld   → generates and saves Generic LLD to DB
+  POST /generate/backend-lld   → generates and saves Backend LLD to DB
+  POST /generate/architecture  → generates and saves System Architecture to DB
   GET  /documents              → retrieve all saved documents
   GET  /documents/{id}         → retrieve a specific document by ID
 
@@ -13,6 +15,7 @@ Run:
 
 import logging
 import sys
+import uuid
 from pathlib import Path
 from typing import List
 
@@ -23,9 +26,15 @@ from pydantic import BaseModel
 # ── Add folders to Python path ────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 
+sys.path.insert(0, str(BASE_DIR / "system_architect_agent"))
 sys.path.insert(0, str(BASE_DIR / "frontend-lld-agent"))
 sys.path.insert(0, str(BASE_DIR / "generic-lld-agent"))
+sys.path.insert(0, str(BASE_DIR / "lld_backend_agent"))
 sys.path.insert(0, str(BASE_DIR / "database"))
+
+# System Architecture Agent
+# ✅ FIX: import run_system_architect directly — same pattern as backend
+from system_architect_agent import run_system_architect
 
 # Frontend Agent
 from frontend_graph import build_agent as build_frontend_agent
@@ -34,6 +43,9 @@ from frontend_graph import create_context as create_frontend_context
 # Generic Agent
 from generic_graph import build_agent as build_generic_agent
 from generic_graph import create_context as create_generic_context
+
+# Backend LLD Agent
+from lld_backend_agent.lldback import run_backend_lld
 
 # Database
 from db import (
@@ -62,6 +74,8 @@ app = FastAPI(
 # Global agents
 frontend_agent = None
 generic_agent = None
+# ✅ No global backend_agent or architecture_agent
+# Both use their own run_* functions that build internally per call
 
 
 # ── Startup Event ─────────────────────────────────────────────────────────────
@@ -75,6 +89,8 @@ def startup():
     logger.info("Building agents...")
     frontend_agent = build_frontend_agent()
     generic_agent = build_generic_agent()
+    # ✅ No backend_agent or architecture_agent at startup
+    # They build internally per request via run_* functions
 
     logger.info("All agents ready.")
 
@@ -116,14 +132,8 @@ def generate_frontend_lld(
     request: LLDRequest,
     db: Session = Depends(get_db)
 ):
-    """
-    Generate Frontend LLD and save to database.
-    """
     try:
-        logger.info(
-            "Received frontend LLD request: %s",
-            request.user_input
-        )
+        logger.info("Received frontend LLD request: %s", request.user_input)
 
         ctx = create_frontend_context(
             user_id="api-user",
@@ -161,10 +171,7 @@ def generate_frontend_lld(
 
     except Exception as e:
         logger.exception("Frontend LLD generation failed")
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post(
@@ -175,14 +182,8 @@ def generate_generic_lld(
     request: LLDRequest,
     db: Session = Depends(get_db)
 ):
-    """
-    Generate Generic LLD and save to database.
-    """
     try:
-        logger.info(
-            "Received generic LLD request: %s",
-            request.user_input
-        )
+        logger.info("Received generic LLD request: %s", request.user_input)
 
         ctx = create_generic_context(
             user_id="api-user",
@@ -220,10 +221,96 @@ def generate_generic_lld(
 
     except Exception as e:
         logger.exception("Generic LLD generation failed")
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/generate/backend-lld",
+    response_model=LLDDocumentResponse
+)
+def generate_backend_lld(
+    request: LLDRequest,
+    db: Session = Depends(get_db)
+):
+    try:
+        logger.info("Received backend LLD request: %s", request.user_input)
+
+        # Combine user_input + requirement_doc if provided
+        lld_input = request.user_input
+        if request.requirement_doc.strip():
+            lld_input = f"{request.user_input}\n\n{request.requirement_doc}"
+
+        output = run_backend_lld(lld_input=lld_input)
+
+        session_id = str(uuid.uuid4())
+
+        doc = save_lld_document(
+            db=db,
+            agent_type="backend_lld",
+            user_input=request.user_input,
+            output=output,
+            requirement_doc=request.requirement_doc,
+            architecture_doc=request.architecture_doc,
+            session_id=session_id,
         )
+
+        return LLDDocumentResponse(
+            id=doc.id,
+            agent_type=doc.agent_type,
+            user_input=doc.user_input,
+            output=doc.output,
+            session_id=doc.session_id or "",
+            created_at=str(doc.created_at),
+        )
+
+    except Exception as e:
+        logger.exception("Backend LLD generation failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/generate/architecture",
+    response_model=LLDDocumentResponse
+)
+def generate_architecture(
+    request: LLDRequest,
+    db: Session = Depends(get_db)
+):
+    try:
+        logger.info("Received architecture request: %s", request.user_input)
+
+        # ✅ FIX: Call run_system_architect directly with input_document
+        # Combine user_input + requirement_doc if provided
+        input_document = request.user_input
+        if request.requirement_doc.strip():
+            input_document = f"{request.user_input}\n\n{request.requirement_doc}"
+
+        output = run_system_architect(input_document=input_document)
+
+        session_id = str(uuid.uuid4())
+
+        doc = save_lld_document(
+            db=db,
+            agent_type="system_architecture",
+            user_input=request.user_input,
+            output=output,
+            requirement_doc=request.requirement_doc,
+            architecture_doc=request.architecture_doc,
+            session_id=session_id,
+        )
+
+        return LLDDocumentResponse(
+            id=doc.id,
+            agent_type=doc.agent_type,
+            user_input=doc.user_input,
+            output=doc.output,
+            session_id=doc.session_id or "",
+            created_at=str(doc.created_at),
+        )
+
+    except Exception as e:
+        logger.exception("System Architecture generation failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get(
@@ -234,14 +321,7 @@ def list_documents(
     agent_type: str = None,
     db: Session = Depends(get_db)
 ):
-    """
-    Get all saved documents.
-    Optional filter by agent_type.
-    """
-    docs = get_all_lld_documents(
-        db=db,
-        agent_type=agent_type
-    )
+    docs = get_all_lld_documents(db=db, agent_type=agent_type)
 
     return [
         LLDDocumentResponse(
@@ -264,13 +344,7 @@ def get_document(
     doc_id: int,
     db: Session = Depends(get_db)
 ):
-    """
-    Get single document by ID.
-    """
-    doc = get_lld_document(
-        db=db,
-        doc_id=doc_id
-    )
+    doc = get_lld_document(db=db, doc_id=doc_id)
 
     if not doc:
         raise HTTPException(

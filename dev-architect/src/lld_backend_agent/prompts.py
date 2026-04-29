@@ -4,7 +4,7 @@ backend_lld_agent_senior.py
 Staff-Level Backend LLD Agent (Single Prompt Version)
 """
 
-from configuration import register_agent_adk
+from .configuration import register_agent_adk
 import importlib
 
 register_agent_adk()
