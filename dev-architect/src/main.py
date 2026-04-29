@@ -26,6 +26,9 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR / "frontend-lld-agent"))
 sys.path.insert(0, str(BASE_DIR / "generic-lld-agent"))
 sys.path.insert(0, str(BASE_DIR / "database"))
+sys.path.insert(0, str(BASE_DIR / "supervisor-agent"))
+sys.path.insert(0, str(BASE_DIR / "system-analyst-agent"))
+sys.path.insert(0, str(BASE_DIR / "low-level-design-agent"))
 
 # Frontend Agent
 from frontend_graph import build_agent as build_frontend_agent
@@ -43,6 +46,17 @@ from db import (
     get_lld_document,
     get_all_lld_documents,
 )
+
+# Supervisor, System Analyst, Low-level Design agents
+from sup import (
+    build_supervisor_agent,
+    _canonicalize_combined_output,
+    _ensure_agent_outputs,
+    _populate_lld_fields_from_output,
+)
+from analyst_agent import build_agent as build_system_analyst_agent, run_system_analysis
+from lld_createagent import run_pipeline as run_lld_pipeline
+from reusableagents.context import AgentContext
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -62,12 +76,16 @@ app = FastAPI(
 # Global agents
 frontend_agent = None
 generic_agent = None
+supervisor_agent = None
+system_analyst_agent = None
+lld_app = None
 
 
 # ── Startup Event ─────────────────────────────────────────────────────────────
 @app.on_event("startup")
 def startup():
     global frontend_agent, generic_agent
+    global supervisor_agent, system_analyst_agent, lld_app
 
     logger.info("Initializing database...")
     init_db()
@@ -75,6 +93,17 @@ def startup():
     logger.info("Building agents...")
     frontend_agent = build_frontend_agent()
     generic_agent = build_generic_agent()
+    try:
+        logger.info("Building supervisor agent...")
+        supervisor_agent = build_supervisor_agent()
+    except Exception:
+        logger.exception("Failed to build supervisor agent; continuing")
+
+    try:
+        logger.info("Building system analyst agent (warmup)...")
+        system_analyst_agent = build_system_analyst_agent()
+    except Exception:
+        logger.exception("Failed to build system analyst agent; continuing")
 
     logger.info("All agents ready.")
 
@@ -224,6 +253,151 @@ def generate_generic_lld(
             status_code=500,
             detail=str(e)
         )
+
+
+@app.post(
+    "/generate/system-analyst",
+    response_model=LLDDocumentResponse,
+)
+def generate_system_analyst(
+    request: LLDRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Run system analyst agent and save result.
+    """
+    try:
+        logger.info("Received system analyst request: %s", request.user_input)
+
+        ctx = AgentContext(state={
+            "user_goal": request.user_input,
+            "requirement_doc": request.requirement_doc,
+            "architecture_doc": request.architecture_doc,
+        })
+
+        output = run_system_analysis(user_goal=request.user_input, context=ctx)
+
+        doc = save_lld_document(
+            db=db,
+            agent_type="system_analyst",
+            user_input=request.user_input,
+            output=output,
+            requirement_doc=request.requirement_doc,
+            architecture_doc=request.architecture_doc,
+            session_id=str(ctx.session.session_id),
+        )
+
+        return LLDDocumentResponse(
+            id=doc.id,
+            agent_type=doc.agent_type,
+            user_input=doc.user_input,
+            output=doc.output,
+            session_id=doc.session_id or "",
+            created_at=str(doc.created_at),
+        )
+
+    except Exception as e:
+        logger.exception("System analyst generation failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/generate/low-level-design",
+    response_model=LLDDocumentResponse,
+)
+def generate_low_level_design(
+    request: LLDRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Run low-level design pipeline and save final report.
+    """
+    try:
+        logger.info("Received LLD request: %s", request.user_input)
+
+        ctx = AgentContext(state={"user_goal": request.user_input})
+
+        result = run_lld_pipeline(request.user_input, context=ctx)
+        final_report = str(result.get("final_report", "")).strip()
+
+        doc = save_lld_document(
+            db=db,
+            agent_type="low_level_design",
+            user_input=request.user_input,
+            output=final_report,
+            requirement_doc=request.requirement_doc,
+            architecture_doc=request.architecture_doc,
+            session_id=str(ctx.session.session_id),
+        )
+
+        return LLDDocumentResponse(
+            id=doc.id,
+            agent_type=doc.agent_type,
+            user_input=doc.user_input,
+            output=doc.output,
+            session_id=doc.session_id or "",
+            created_at=str(doc.created_at),
+        )
+
+    except Exception as e:
+        logger.exception("LLD generation failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/generate/supervisor",
+    response_model=LLDDocumentResponse,
+)
+def generate_supervisor(
+    request: LLDRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Run the supervisor orchestrator and save combined output.
+    """
+    try:
+        logger.info("Received supervisor request: %s", request.user_input)
+
+        if supervisor_agent is None:
+            raise RuntimeError("Supervisor agent not initialized")
+
+        ctx = AgentContext(state={"user_goal": request.user_input})
+
+        response = supervisor_agent.run(task=request.user_input, context=ctx)
+        raw_output = response.output if hasattr(response, "output") else str(response)
+        _ensure_agent_outputs(request.user_input, ctx)
+        _populate_lld_fields_from_output(ctx)
+        output = _canonicalize_combined_output(
+            str(raw_output or "").strip(),
+            user_goal=request.user_input,
+            context=ctx,
+        ).strip()
+
+        if not output:
+            raise RuntimeError("Supervisor completed without producing output")
+
+        doc = save_lld_document(
+            db=db,
+            agent_type="supervisor",
+            user_input=request.user_input,
+            output=str(output).strip(),
+            requirement_doc=request.requirement_doc,
+            architecture_doc=request.architecture_doc,
+            session_id=str(ctx.session.session_id),
+        )
+
+        return LLDDocumentResponse(
+            id=doc.id,
+            agent_type=doc.agent_type,
+            user_input=doc.user_input,
+            output=doc.output,
+            session_id=doc.session_id or "",
+            created_at=str(doc.created_at),
+        )
+
+    except Exception as e:
+        logger.exception("Supervisor generation failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get(
