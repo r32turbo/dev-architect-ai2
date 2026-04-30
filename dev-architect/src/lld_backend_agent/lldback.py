@@ -170,13 +170,21 @@ def _resolve_lld_input(
     lld_input: str | None = None,
     context: "AgentContext | None" = None,
 ) -> str:
+    # Priority: explicit lld_input param > requirement_doc in context > lld_input in context
     if str(lld_input or "").strip():
         return str(lld_input).strip()
 
     if isinstance(getattr(context, "state", None), dict):
-        val = str(context.state.get("lld_input", "")).strip()
-        if val:
-            return val
+        # Accept an explicit requirements doc if provided by the caller
+        req = str(context.state.get("requirement_doc", "")).strip()
+        if req:
+            return req
+
+        # Accept system analyst or prior LLD outputs as fallback
+        for key in ("lld.output", "system_analyst.output", "system_architect.output", "lld_input"):
+            val = str(context.state.get(key, "")).strip()
+            if val:
+                return val
 
     return ""
 
