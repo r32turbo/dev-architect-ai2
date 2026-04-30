@@ -3,52 +3,21 @@ import sys
 from typing import Any
 
 
-def run_backend_lld(lld_input: str | None = None, context: Any | None = None) -> str:
-    """
-    Minimal runtime API expected by the supervisor.
-    Returns a simple placeholder string describing that the backend LLD
-    is not fully implemented. Includes the provided `lld_input` when available.
-    """
+def _load_backend_runner():
     try:
-        input_text = (str(lld_input) or "").strip()
+        from lld_backend_agent.lldback import run_backend_lld as backend_runner
 
-        # Allow context to be either an AgentContext-like object or a plain dict
-        requirement_doc = None
-        architecture_doc = None
-        try:
-            if context is not None:
-                # If it's a dict-like mapping
-                if isinstance(context, dict):
-                    requirement_doc = context.get("requirement_doc")
-                    architecture_doc = context.get("architecture_doc")
-                else:
-                    # Fallback: try attribute access (AgentContext)
-                    requirement_doc = getattr(context, "requirement_doc", None)
-                    architecture_doc = getattr(context, "architecture_doc", None)
-        except Exception:
-            requirement_doc = None
-            architecture_doc = None
+        return backend_runner
+    except Exception:
+        from .lldback import run_backend_lld as backend_runner
 
-        parts = []
-        parts.append("Backend LLD placeholder: received input." if input_text else "Backend LLD placeholder: no input provided.")
-        parts.append("This is a minimal stub implementation. Replace with real backend LLD.")
+        return backend_runner
 
-        if input_text:
-            parts.append("Received input:")
-            parts.append(input_text)
 
-        if requirement_doc:
-            parts.append("\nRequirement doc (provided to backend):")
-            parts.append(str(requirement_doc))
-
-        if architecture_doc:
-            parts.append("\nArchitecture doc (provided to backend):")
-            parts.append(str(architecture_doc))
-
-        return "\n".join(parts)
-
-    except Exception as e:
-        return f"Backend LLD stub error: {e}"
+def run_backend_lld(lld_input: str | None = None, context: Any | None = None) -> str:
+    """Delegate backend generation to the real backend LLD runner."""
+    backend_runner = _load_backend_runner()
+    return backend_runner(lld_input=lld_input, context=context)
 
 
 def main():
@@ -65,10 +34,13 @@ def main():
         # Pass supporting docs through to the backend if provided
         requirement_doc = payload.get("requirement_doc")
         architecture_doc = payload.get("architecture_doc")
-        backend_output = run_backend_lld(lld_input=lld_input, context={
-            "requirement_doc": requirement_doc,
-            "architecture_doc": architecture_doc,
-        })
+        backend_output = run_backend_lld(
+            lld_input=lld_input,
+            context={
+                "requirement_doc": requirement_doc,
+                "architecture_doc": architecture_doc,
+            },
+        )
 
         # Emit JSON so the supervisor subprocess wrapper can parse it
         print(json.dumps({"backend_lld_output": str(backend_output).strip(), "status": "placeholder"}))

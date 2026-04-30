@@ -706,6 +706,7 @@ class BackendLLDWorker:
                 adk_root = Path(sys.argv[1])
                 backend_app_path = Path(sys.argv[2])
                 backend_dir = backend_app_path.parent
+                backend_root = backend_dir.parent
 
                 payload = {}
                 raw_input = sys.stdin.read()
@@ -717,6 +718,8 @@ class BackendLLDWorker:
                 lld_input = str(payload.get("lld_input", ""))
                 context_state = payload.get("context_state", {})
 
+                if str(backend_root) not in sys.path:
+                    sys.path.insert(0, str(backend_root))
                 if str(backend_dir) not in sys.path:
                     sys.path.insert(0, str(backend_dir))
                 if str(adk_root) not in sys.path:
@@ -765,7 +768,7 @@ class BackendLLDWorker:
 
             lld_input = str(task).strip()
             if isinstance(getattr(context, "state", None), dict):
-                lld_input = str(context.state.get("lld.final_report", lld_input)).strip() or lld_input
+                lld_input = str(context.state.get("lld.output", lld_input)).strip() or lld_input
 
             completed = subprocess.run(
                 [sys.executable, "-c", runner, str(ADK_ROOT), str(backend_app_path)],
@@ -1334,16 +1337,16 @@ def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> Non
         _run_stage(LLDWorker(AgentResponse).run, "lld_agent", "lld.output", frontend_output)
     _populate_lld_fields_from_output(context)
 
-    lld_final_report = str(state.get("lld.final_report", "")).strip() or frontend_output
+    lld_output = str(state.get("lld.output", "")).strip() or frontend_output
     if _missing("backend_lld.output"):
         _run_stage(
             BackendLLDWorker(AgentResponse).run,
             "backend_lld_agent",
             "backend_lld.output",
-            lld_final_report,
+            lld_output,
         )
 
-    backend_output = str(state.get("backend_lld.output", "")).strip() or lld_final_report
+    backend_output = str(state.get("backend_lld.output", "")).strip() or lld_output
     if _missing("generic_lld.output"):
         _run_stage(
             GenericLLDWorker(AgentResponse).run,

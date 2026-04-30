@@ -2,7 +2,25 @@
 prompts.py – Backend LLD Agent
 """
 
-from .configuration import register_agent_adk
+try:
+    from .configuration import register_agent_adk
+except Exception:
+    # If the module is executed as a script (no package context),
+    # fall back to an absolute import so the registration still runs.
+    try:
+        from lld_backend_agent.configuration import register_agent_adk
+    except Exception:
+        # Last-resort: import by path (works if the repo layout is unchanged)
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        cfg_path = Path(__file__).resolve().parents[0] / "configuration.py"
+        spec = importlib.util.spec_from_file_location("lld_backend_agent.configuration", str(cfg_path))
+        cfg = importlib.util.module_from_spec(spec)
+        sys.modules["lld_backend_agent.configuration"] = cfg
+        spec.loader.exec_module(cfg)
+        register_agent_adk = getattr(cfg, "register_agent_adk")
 import importlib
 
 register_agent_adk()
