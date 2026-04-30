@@ -58,7 +58,7 @@ def _initialize_observability() -> None:
     if _OBSERVABILITY_INITIALIZED:
         return
 
-    enabled = os.getenv("SYSTEM_ANALYST_OBSERVABILITY_ENABLED", "1").strip().lower()
+    enabled = os.getenv("SYSTEM_ANALYST_OBSERVABILITY_ENABLED", "0").strip().lower()
     if enabled in {"0", "false", "no", "off"}:
         _OBSERVABILITY_INITIALIZED = True
         return
@@ -233,9 +233,25 @@ def build_agent(context: "AgentContext | None" = None):
 
     validator = OutputValidator(llm=validator_llm)
 
+    # Resolve optional supporting documents from provided context so prompts can use them
+    requirement_doc = ""
+    architecture_doc = ""
+    if context is not None:
+        ctx_state = getattr(context, "state", None)
+        if isinstance(ctx_state, dict):
+            requirement_doc = str(ctx_state.get("requirement_doc", "")).strip()
+            architecture_doc = str(ctx_state.get("architecture_doc", "")).strip()
+
+    # Format the system prompt with the supporting documents while preserving the
+    # `{user_goal}` placeholder for the user turn (use double braces in prompt to escape).
+    system_prompt = SYSTEM_ANALYST_PROMPT.format(
+        requirement_doc=requirement_doc,
+        architecture_doc=architecture_doc,
+    )
+
     prompt_builder = (
         PromptBuilder()
-        .add_system(SYSTEM_ANALYST_PROMPT)
+        .add_system(system_prompt)
         .add_user("{user_goal}")
     )
 
@@ -284,7 +300,7 @@ def run_system_analysis(
         import mlflow  # type: ignore[reportMissingImports]
 
         mlflow_module = mlflow
-        enabled = os.getenv("SYSTEM_ANALYST_OBSERVABILITY_ENABLED", "1").strip().lower()
+        enabled = os.getenv("SYSTEM_ANALYST_OBSERVABILITY_ENABLED", "0").strip().lower()
         if enabled not in {"0", "false", "no", "off"}:
             mlflow.start_run(run_name="system_analyst_agent", nested=True)
             mlflow_run_started = True
@@ -307,14 +323,57 @@ def run_system_analysis(
 
     chunk_outputs: list[str] = []
     for idx, chunk in enumerate(goal_chunks):
-        run_kwargs = {
-            "user_goal": (
-                f"Original goal:\n{resolved_goal}\n\n"
-                f"Analyze this goal chunk ({idx + 1}/{len(goal_chunks)}):\n{chunk}"
-            )
+        # Build a user-turn that keeps the user goal as the primary instruction
+        # and appends supporting documents explicitly as supplementary context.
+        # This prevents the supporting docs from overriding the goal while
+        # still making them available to the LLM.
+        docs_suffix = ""
+        try:
+            if context is not None and isinstance(getattr(context, "state", None), dict):
+                req_doc = str(context.state.get("requirement_doc", "") or "").strip()
+                arch_doc = str(context.state.get("architecture_doc", "") or "").strip()
+                if req_doc or arch_doc:
+                    parts = ["Supplementary documents (reference only; DO NOT replace the user goal):"]
+                    if req_doc:
+                        parts.append("Requirements:\n" + req_doc)
+                    if arch_doc:
+                        parts.append("Architecture:\n" + arch_doc)
+                    docs_suffix = "\n\n" + "\n\n".join(parts)
+        except Exception:
+            docs_suffix = ""
+
+        # Build a structured inputs block that presents all three inputs equally.
+        try:
+            ctx_state = getattr(context, "state", {}) if context is not None else {}
+            req_doc = str(ctx_state.get("requirement_doc", "") or "").strip()
+            arch_doc = str(ctx_state.get("architecture_doc", "") or "").strip()
+        except Exception:
+            req_doc = ""
+            arch_doc = ""
+
+        inputs_block = f"""Inputs (treat all three equally):
+
+    Primary User Goal:
+    {resolved_goal}
+
+    Requirements Document:
+    {req_doc}
+
+    Architecture Document:
+    {arch_doc}
+
+    Instruction: Consider each input as equally important. When you make design or decision statements, explicitly indicate which input(s) influenced that decision.
+
+    """
+
+        run_input = (
+            f"Analyze this goal chunk ({idx + 1}/{len(goal_chunks)}):\n{chunk}"
             if len(goal_chunks) > 1
             else resolved_goal
-        }
+        )
+
+        # Provide the structured inputs first (so the model sees them together), then the analysis task.
+        run_kwargs = {"user_goal": inputs_block + run_input}
         if context is not None:
             run_kwargs["context"] = context
 
@@ -325,6 +384,25 @@ def run_system_analysis(
             context.set_state(f"system_analyst.output.chunk_{idx + 1}", out)
 
     output = deduplicate_output("\n\n".join(item for item in chunk_outputs if str(item).strip()))
+
+    # Ensure supporting documents are present in final output. If the agent
+    # did not include the provided `requirement_doc` or `architecture_doc`,
+    # append them under a clear heading so downstream pipelines can consume
+    # them (and so API callers can see the inputs echoed back).
+    try:
+        if context is not None and isinstance(getattr(context, "state", None), dict):
+            req = str(context.state.get("requirement_doc", "") or "").strip()
+            arch = str(context.state.get("architecture_doc", "") or "").strip()
+            append_parts: list[str] = []
+            if req and req not in output:
+                append_parts.append("## Supporting Documents\n\n**Requirements Document:**\n" + req)
+            if arch and arch not in output:
+                append_parts.append("\n**Architecture Document:**\n" + arch)
+            if append_parts:
+                output = (str(output).rstrip() + "\n\n" + "\n\n".join(append_parts)).strip()
+    except Exception:
+        # Non-fatal: if anything goes wrong here, keep original output
+        pass
 
     if context is not None and callable(getattr(context, "set_state", None)):
         context.set_state("system_analyst.output", output)

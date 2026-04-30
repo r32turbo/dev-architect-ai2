@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langchain_google_vertexai import ChatVertexAI
 
 from prompt import SYSTEM_ANALYST_PROMPT
+import os
 from react_agent import ReusableReActAgent
 from prompts_builder import PromptBuilder
 from config import AgentConfig
@@ -29,9 +30,17 @@ llm = ChatVertexAI(
 
 
 # ---------------- PROMPT BUILDER ----------------
+# Allow optional supporting documents from environment for standalone runs
+requirement_doc = os.getenv("SYSTEM_ANALYST_REQUIREMENT_DOC", "")
+architecture_doc = os.getenv("SYSTEM_ANALYST_ARCHITECTURE_DOC", "")
+system_prompt = SYSTEM_ANALYST_PROMPT.format(
+    requirement_doc=requirement_doc,
+    architecture_doc=architecture_doc,
+)
+
 prompt_builder = (
     PromptBuilder()
-    .add_system(SYSTEM_ANALYST_PROMPT, name="system")
+    .add_system(system_prompt, name="system")
     .add_user("{user_goal}", name="user")
 )
 

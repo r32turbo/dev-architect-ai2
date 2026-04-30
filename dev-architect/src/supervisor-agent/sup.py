@@ -354,51 +354,59 @@ class SystemAnalystWorker:
 
     def run(self, task: str, context: "AgentContext | None" = None):
         # Avoid long MLflow retries (localhost:5000) during supervisor runs.
-        # Users can still explicitly enable this by setting value to 1.
-        os.environ.setdefault("SYSTEM_ANALYST_OBSERVABILITY_ENABLED", "0")
+        # Preserve any prior setting after the analyst call so standalone
+        # usage can still opt back into observability.
+        previous_observability = os.environ.get("SYSTEM_ANALYST_OBSERVABILITY_ENABLED")
+        os.environ["SYSTEM_ANALYST_OBSERVABILITY_ENABLED"] = "0"
         if context is not None and callable(getattr(context, "record", None)):
             context.record(
                 agent_name="system_analyst_worker",
                 event="started",
                 detail=str(task)[:160],
             )
-        if self._agent is None:
-            prompt_module = _load_module("system_analyst_prompt", SYSTEM_ANALYST_PROMPT_PATH)
-            sys.modules["prompt"] = prompt_module
+        try:
+            if self._agent is None:
+                prompt_module = _load_module("system_analyst_prompt", SYSTEM_ANALYST_PROMPT_PATH)
+                sys.modules["prompt"] = prompt_module
 
-            analyst_module = _load_module(
-                "system_analyst_main", _resolve_system_analyst_entry_path()
-            )
-            if hasattr(analyst_module, "load_environment"):
-                analyst_module.load_environment()
-            self._agent = analyst_module.build_agent()
-            self._module = analyst_module
+                analyst_module = _load_module(
+                    "system_analyst_main", _resolve_system_analyst_entry_path()
+                )
+                if hasattr(analyst_module, "load_environment"):
+                    analyst_module.load_environment()
+                self._agent = analyst_module.build_agent()
+                self._module = analyst_module
 
-        output = ""
-        run_in_module = getattr(getattr(self, "_module", None), "run_system_analysis", None)
-        if callable(run_in_module):
+            output = ""
+            run_in_module = getattr(getattr(self, "_module", None), "run_system_analysis", None)
+            if callable(run_in_module):
+                if context is not None and callable(getattr(context, "set_state", None)):
+                    context.set_state("user_goal", str(task).strip())
+                try:
+                    output = run_in_module(context=context)
+                except TypeError as exc:
+                    if "required positional argument" not in str(exc):
+                        raise
+                    output = run_in_module(user_goal=task, context=context)
+            else:
+                goal = str(task).strip()
+                if isinstance(getattr(context, "state", None), dict):
+                    goal = str(context.state.get("user_goal", goal)).strip() or goal
+                run_kwargs = {"user_goal": goal}
+                if context is not None:
+                    run_kwargs["context"] = context
+                result = self._agent.run(**run_kwargs)
+                output = result.output if hasattr(result, "output") else str(result)
+            _store_agent_chunks("system_analyst", str(output).strip(), context)
             if context is not None and callable(getattr(context, "set_state", None)):
-                context.set_state("user_goal", str(task).strip())
-            try:
-                output = run_in_module(context=context)
-            except TypeError as exc:
-                if "required positional argument" not in str(exc):
-                    raise
-                output = run_in_module(user_goal=task, context=context)
-        else:
-            goal = str(task).strip()
-            if isinstance(getattr(context, "state", None), dict):
-                goal = str(context.state.get("user_goal", goal)).strip() or goal
-            run_kwargs = {"user_goal": goal}
-            if context is not None:
-                run_kwargs["context"] = context
-            result = self._agent.run(**run_kwargs)
-            output = result.output if hasattr(result, "output") else str(result)
-        _store_agent_chunks("system_analyst", str(output).strip(), context)
-        if context is not None and callable(getattr(context, "set_state", None)):
-            context.set_state("system_analyst.output", str(output).strip())
-            context.record(agent_name="system_analyst_worker", event="completed")
-        return self._agent_response_type(output=str(output).strip())
+                context.set_state("system_analyst.output", str(output).strip())
+                context.record(agent_name="system_analyst_worker", event="completed")
+            return self._agent_response_type(output=str(output).strip())
+        finally:
+            if previous_observability is None:
+                os.environ.pop("SYSTEM_ANALYST_OBSERVABILITY_ENABLED", None)
+            else:
+                os.environ["SYSTEM_ANALYST_OBSERVABILITY_ENABLED"] = previous_observability
 
 
 class LLDWorker:
@@ -645,8 +653,17 @@ class FrontendLLDWorker:
         state = getattr(context, "state", None)
         state = state if isinstance(state, dict) else {}
         user_input = str(state.get("user_goal", "")).strip() or str(task).strip()
-        requirement_doc = str(state.get("system_analyst.output", "")).strip() or str(task).strip()
-        architecture_doc = str(state.get("system_architect.output", "")).strip() or str(task).strip()
+        # Prefer explicit context fields when provided by the API caller.
+        requirement_doc = (
+            str(state.get("requirement_doc", "")).strip()
+            or str(state.get("system_analyst.output", "")).strip()
+            or str(task).strip()
+        )
+        architecture_doc = (
+            str(state.get("architecture_doc", "")).strip()
+            or str(state.get("system_architect.output", "")).strip()
+            or str(task).strip()
+        )
 
         result = self._agent.run(
             context=context,
@@ -855,12 +872,20 @@ class GenericLLDWorker:
             state = getattr(context, "state", None)
             state = state if isinstance(state, dict) else {}
 
+            # Build payload for generic LLD subprocess, preferring explicit context keys.
             payload = {
                 "user_input": str(state.get("user_goal", task)).strip() or str(task).strip(),
-                "requirement_doc": str(state.get("system_analyst.output", task)).strip() or str(task).strip(),
-                "architecture_doc": str(state.get("backend_lld.output", "")).strip()
-                or str(state.get("lld.final_report", "")).strip()
-                or str(task).strip(),
+                "requirement_doc": (
+                    str(state.get("requirement_doc", "")).strip()
+                    or str(state.get("system_analyst.output", task)).strip()
+                    or str(task).strip()
+                ),
+                "architecture_doc": (
+                    str(state.get("architecture_doc", "")).strip()
+                    or str(state.get("backend_lld.output", "")).strip()
+                    or str(state.get("lld.final_report", "")).strip()
+                    or str(task).strip()
+                ),
                 "context_state": dict(state),
             }
 
