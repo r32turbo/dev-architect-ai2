@@ -277,7 +277,7 @@ def generate_system_analyst(
 
         output = run_system_analysis(user_goal=request.user_input, context=ctx)
 
-        doc = save_lld_document(
+        return _save_agent_run(
             db=db,
             agent_type="system_analyst",
             user_input=request.user_input,
@@ -285,15 +285,6 @@ def generate_system_analyst(
             requirement_doc=request.requirement_doc,
             architecture_doc=request.architecture_doc,
             session_id=str(ctx.session.session_id),
-        )
-
-        return LLDDocumentResponse(
-            id=doc.id,
-            agent_type=doc.agent_type,
-            user_input=doc.user_input,
-            output=doc.output,
-            session_id=doc.session_id or "",
-            created_at=str(doc.created_at),
         )
 
     except Exception as e:
@@ -328,7 +319,7 @@ def generate_low_level_design(
         )
         final_report = str(result.get("final_report", "")).strip()
 
-        doc = save_lld_document(
+        return _save_agent_run(
             db=db,
             agent_type="low_level_design",
             user_input=request.user_input,
@@ -336,15 +327,6 @@ def generate_low_level_design(
             requirement_doc=request.requirement_doc,
             architecture_doc=request.architecture_doc,
             session_id=str(ctx.session.session_id),
-        )
-
-        return LLDDocumentResponse(
-            id=doc.id,
-            agent_type=doc.agent_type,
-            user_input=doc.user_input,
-            output=doc.output,
-            session_id=doc.session_id or "",
-            created_at=str(doc.created_at),
         )
 
     except Exception as e:
@@ -388,7 +370,7 @@ def generate_supervisor(
         if not output:
             raise RuntimeError("Supervisor completed without producing output")
 
-        doc = save_lld_document(
+        return _save_agent_run(
             db=db,
             agent_type="supervisor",
             user_input=request.user_input,
@@ -396,15 +378,6 @@ def generate_supervisor(
             requirement_doc=request.requirement_doc,
             architecture_doc=request.architecture_doc,
             session_id=str(ctx.session.session_id),
-        )
-
-        return LLDDocumentResponse(
-            id=doc.id,
-            agent_type=doc.agent_type,
-            user_input=doc.user_input,
-            output=doc.output,
-            session_id=doc.session_id or "",
-            created_at=str(doc.created_at),
         )
 
     except Exception as e:
