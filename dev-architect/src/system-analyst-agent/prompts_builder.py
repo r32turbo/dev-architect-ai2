@@ -83,7 +83,13 @@ class PromptBuilder:
         """
         if self._system_template is None:
             return ""
-        return self._system_template.format(**kwargs)
+        # Escape literal braces in any string kwargs to avoid
+        # ValueError from unmatched '{' when formatting.
+        safe_kwargs = {
+            k: (v.replace("{", "{{").replace("}", "}}") if isinstance(v, str) else v)
+            for k, v in kwargs.items()
+        }
+        return self._system_template.format(**safe_kwargs)
 
     def render_user(self, **kwargs: Any) -> str:
         """
@@ -101,4 +107,8 @@ class PromptBuilder:
         """
         if self._user_template is None:
             return ""
-        return self._user_template.format(**kwargs)
+        safe_kwargs = {
+            k: (v.replace("{", "{{").replace("}", "}}") if isinstance(v, str) else v)
+            for k, v in kwargs.items()
+        }
+        return self._user_template.format(**safe_kwargs)
