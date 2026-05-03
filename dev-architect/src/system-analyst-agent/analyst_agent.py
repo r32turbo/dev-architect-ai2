@@ -1,0 +1,447 @@
+import os
+import sys
+import types
+import importlib
+import logging
+import time
+import warnings
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from reusableagents.context import AgentContext  # type: ignore[reportMissingImports]
+
+try:
+    from .prompt import SYSTEM_ANALYST_PROMPT
+except ImportError:
+    from prompt import SYSTEM_ANALYST_PROMPT  # type: ignore[reportMissingImports]
+
+try:
+    from .observability import setup_logging, setup_mlflow
+except ImportError:
+    try:
+        from observability import setup_logging, setup_mlflow  # type: ignore[reportMissingImports]
+    except ImportError:
+        setup_logging = None  # type: ignore[assignment]
+        setup_mlflow = None  # type: ignore[assignment]
+
+# Hide known ChatVertexAI deprecation warnings from terminal output.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*ChatVertexAI.*deprecated.*",
+    category=Warning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r".*Use \[`ChatGoogleGenerativeAI`\].*",
+    category=Warning,
+)
+
+ADK_ROOT = Path(__file__).resolve().parents[1] / "agent-adk"
+if str(ADK_ROOT) not in sys.path:
+    sys.path.insert(0, str(ADK_ROOT))
+
+if "reusableagents" not in sys.modules:
+    reusableagents_pkg = types.ModuleType("reusableagents")
+    reusableagents_pkg.__path__ = [str(ADK_ROOT)]
+    sys.modules["reusableagents"] = reusableagents_pkg
+
+logger = logging.getLogger(__name__)
+_OBSERVABILITY_INITIALIZED = False
+
+
+def _initialize_observability() -> None:
+    """Initialize observability once and never block agent execution on errors."""
+    global _OBSERVABILITY_INITIALIZED
+    if _OBSERVABILITY_INITIALIZED:
+        return
+
+    enabled = os.getenv("SYSTEM_ANALYST_OBSERVABILITY_ENABLED", "0").strip().lower()
+    if enabled in {"0", "false", "no", "off"}:
+        _OBSERVABILITY_INITIALIZED = True
+        return
+
+    try:
+        if callable(setup_logging):
+            setup_logging()
+        if callable(setup_mlflow):
+            setup_mlflow()
+    except Exception as exc:
+        logger.warning("Observability init failed; continuing without it: %s", exc)
+    finally:
+        _OBSERVABILITY_INITIALIZED = True
+
+
+def _get_chunking_config() -> tuple[int, int]:
+    chunk_size = int(os.getenv("SYSTEM_ANALYST_CHUNK_SIZE_CHARS", "8000"))
+    chunk_overlap = int(os.getenv("SYSTEM_ANALYST_CHUNK_OVERLAP_CHARS", "800"))
+    if chunk_size < 1000:
+        chunk_size = 1000
+    if chunk_overlap < 0:
+        chunk_overlap = 0
+    if chunk_overlap >= chunk_size:
+        chunk_overlap = max(0, chunk_size // 10)
+    return chunk_size, chunk_overlap
+
+
+def _chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
+    source = str(text or "")
+    if len(source) <= chunk_size:
+        return [source]
+
+    chunks: list[str] = []
+    start = 0
+    text_len = len(source)
+
+    while start < text_len:
+        end = min(start + chunk_size, text_len)
+        if end < text_len:
+            paragraph_break = source.rfind("\n\n", start, end)
+            line_break = source.rfind("\n", start, end)
+            break_at = paragraph_break if paragraph_break > start else line_break
+            if break_at > start:
+                end = break_at
+
+        part = source[start:end].strip()
+        if part:
+            chunks.append(part)
+
+        if end >= text_len:
+            break
+        start = max(end - chunk_overlap, start + 1)
+
+    return chunks or [source]
+
+
+def load_adk_components():
+    react_mod = importlib.import_module("reusableagents.agents.react_agent")
+    prompts_mod = importlib.import_module("reusableagents.prompts.base")
+    config_mod = importlib.import_module("reusableagents.config.settings")
+    validator_mod = importlib.import_module("reusableagents.agents.validator")
+    llm_mod = importlib.import_module("reusableagents.llm.gemini")
+    return (
+        react_mod.ReusableReActAgent,
+        prompts_mod.PromptBuilder,
+        config_mod.AgentConfig,
+        validator_mod.OutputValidator,
+        config_mod.GeminiConfig,
+        llm_mod.create_agent_llm,
+        llm_mod.create_validator_llm,
+    )
+
+
+REQUIRED_SECTIONS = [
+    "introduction",
+    "project goal",
+    "scope",
+    "functional requirements",
+    "non functional requirements",
+    "assumptions",
+    "out of scope",
+    "acceptance criteria",
+    "risks and mitigations",
+]
+
+
+def normalize_text(text: str) -> str:
+    return "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in text.lower())
+
+
+def deduplicate_output(text: str) -> str:
+    """Remove repeated markdown chunks while preserving order and spacing."""
+    if not text.strip():
+        return text
+
+    chunks = [chunk.strip() for chunk in text.split("\n\n") if chunk.strip()]
+    seen = set()
+    unique_chunks = []
+
+    for chunk in chunks:
+        normalized_chunk = " ".join(normalize_text(chunk).split())
+        if normalized_chunk and normalized_chunk not in seen:
+            seen.add(normalized_chunk)
+            unique_chunks.append(chunk)
+
+    return "\n\n".join(unique_chunks).strip()
+
+
+def normalize_analyst_output(text: str) -> str:
+    """Normalize analyst output into clean markdown without conversational preamble."""
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+
+    lines = raw.splitlines()
+    first_heading_idx = next(
+        (i for i, line in enumerate(lines) if line.strip().startswith("#")),
+        None,
+    )
+
+    if first_heading_idx is not None and first_heading_idx > 0:
+        raw = "\n".join(lines[first_heading_idx:]).strip()
+    elif first_heading_idx is None:
+        raw = (
+            "## System Requirements and Design Specification\n\n"
+            f"{raw}"
+        )
+
+    return raw
+
+
+# ---------------- ENV ----------------
+def load_environment():
+    base_dir = Path(__file__).resolve().parent
+    search_roots = [base_dir, *base_dir.parents, Path.cwd(), *Path.cwd().parents]
+    seen: set[Path] = set()
+
+    for path in search_roots:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        env_file = path / ".env"
+        if env_file.exists():
+            load_dotenv(env_file)
+            break
+
+
+# ---------------- AGENT SETUP ----------------
+def build_agent(context: "AgentContext | None" = None):
+    (
+        ReusableReActAgent,
+        PromptBuilder,
+        AgentConfig,
+        OutputValidator,
+        GeminiConfig,
+        create_agent_llm,
+        create_validator_llm,
+    ) = load_adk_components()
+
+    gemini_config = GeminiConfig(
+        project_id=os.getenv("GOOGLE_CLOUD_PROJECT", "eds-alchemy"),
+        location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+        agent_model=os.getenv("GEMINI_AGENT_MODEL", "gemini-2.5-flash-lite"),       # Primary ReAct agent model
+        validator_model=os.getenv("GEMINI_VALIDATOR_MODEL", "gemini-2.5-flash-lite"),   # Separate validator model (can differ)
+        agent_temperature=0.0,
+        validator_temperature=0.0,
+    )
+
+    agent_llm = create_agent_llm(gemini_config)
+    validator_llm = create_validator_llm(gemini_config)
+
+    validator = OutputValidator(llm=validator_llm)
+
+    # Resolve optional supporting documents from provided context so prompts can use them
+    requirement_doc = ""
+    architecture_doc = ""
+    if context is not None:
+        ctx_state = getattr(context, "state", None)
+        if isinstance(ctx_state, dict):
+            requirement_doc = str(ctx_state.get("requirement_doc", "")).strip()
+            architecture_doc = str(ctx_state.get("architecture_doc", "")).strip()
+
+    # Format the system prompt with the supporting documents while preserving the
+    # `{user_goal}` placeholder for the user turn (use double braces in prompt to escape).
+    system_prompt = SYSTEM_ANALYST_PROMPT.format(
+        requirement_doc=requirement_doc,
+        architecture_doc=architecture_doc,
+    )
+
+    prompt_builder = (
+        PromptBuilder()
+        .add_system(system_prompt)
+        .add_user("{user_goal}")
+    )
+
+    return ReusableReActAgent(
+        tools=[],
+        llm=agent_llm,
+        prompt_builder=prompt_builder,
+        validator=validator,
+        config=AgentConfig(
+            max_react_iterations=5,
+            enable_validation=False,
+            max_refinement_attempts=2,
+        ),
+    )
+
+
+def _resolve_user_goal(
+    user_goal: str | None = None,
+    context: "AgentContext | None" = None,
+) -> str:
+    if str(user_goal or "").strip():
+        return str(user_goal).strip()
+    if isinstance(getattr(context, "state", None), dict):
+        goal = str(context.state.get("user_goal", "")).strip()
+        if goal:
+            return goal
+    return ""
+
+
+def run_system_analysis(
+    user_goal: str | None = None,
+    context: "AgentContext | None" = None,
+) -> str:
+    """Run the analyst workflow with optional shared context."""
+    load_environment()
+    _initialize_observability()
+    agent = build_agent(context)
+    resolved_goal = _resolve_user_goal(user_goal=user_goal, context=context)
+    if not resolved_goal:
+        raise ValueError("user_goal is required (directly or via context.state['user_goal'])")
+
+    started_at = time.perf_counter()
+    mlflow_module = None
+    mlflow_run_started = False
+    try:
+        import mlflow  # type: ignore[reportMissingImports]
+
+        mlflow_module = mlflow
+        enabled = os.getenv("SYSTEM_ANALYST_OBSERVABILITY_ENABLED", "0").strip().lower()
+        if enabled not in {"0", "false", "no", "off"}:
+            mlflow.start_run(run_name="system_analyst_agent", nested=True)
+            mlflow_run_started = True
+            mlflow.set_tag("agent", "system_analyst_agent")
+            mlflow.log_param("user_goal_length", len(resolved_goal))
+    except Exception as exc:
+        logger.debug("MLflow run start skipped: %s", exc)
+
+    if context is not None and callable(getattr(context, "record", None)):
+        context.record(
+            agent_name="system_analyst_agent",
+            event="started",
+            detail=str(resolved_goal)[:160],
+        )
+    chunk_size, chunk_overlap = _get_chunking_config()
+    goal_chunks = _chunk_text(resolved_goal, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    if len(goal_chunks) > 1:
+        logger.info("System analyst chunking enabled (%d chunks)", len(goal_chunks))
+
+    chunk_outputs: list[str] = []
+    for idx, chunk in enumerate(goal_chunks):
+        # Build a user-turn that keeps the user goal as the primary instruction
+        # and appends supporting documents explicitly as supplementary context.
+        # This prevents the supporting docs from overriding the goal while
+        # still making them available to the LLM.
+        docs_suffix = ""
+        try:
+            if context is not None and isinstance(getattr(context, "state", None), dict):
+                req_doc = str(context.state.get("requirement_doc", "") or "").strip()
+                arch_doc = str(context.state.get("architecture_doc", "") or "").strip()
+                if req_doc or arch_doc:
+                    parts = ["Supplementary documents (reference only; DO NOT replace the user goal):"]
+                    if req_doc:
+                        parts.append("Requirements:\n" + req_doc)
+                    if arch_doc:
+                        parts.append("Architecture:\n" + arch_doc)
+                    docs_suffix = "\n\n" + "\n\n".join(parts)
+        except Exception:
+            docs_suffix = ""
+
+        # Build a structured inputs block that presents all three inputs equally.
+        try:
+            ctx_state = getattr(context, "state", {}) if context is not None else {}
+            req_doc = str(ctx_state.get("requirement_doc", "") or "").strip()
+            arch_doc = str(ctx_state.get("architecture_doc", "") or "").strip()
+        except Exception:
+            req_doc = ""
+            arch_doc = ""
+
+        inputs_block = f"""Inputs (treat all three equally):
+
+    Primary User Goal:
+    {resolved_goal}
+
+    Requirements Document:
+    {req_doc}
+
+    Architecture Document:
+    {arch_doc}
+
+    Instruction: Consider each input as equally important. When you make design or decision statements, explicitly indicate which input(s) influenced that decision.
+
+    """
+
+        run_input = (
+            f"Analyze this goal chunk ({idx + 1}/{len(goal_chunks)}):\n{chunk}"
+            if len(goal_chunks) > 1
+            else resolved_goal
+        )
+
+        # Provide the structured inputs first (so the model sees them together), then the analysis task.
+        run_kwargs = {"user_goal": inputs_block + run_input}
+        if context is not None:
+            run_kwargs["context"] = context
+
+        result = agent.run(**run_kwargs)
+        out = normalize_analyst_output(result.output if hasattr(result, "output") else result)
+        chunk_outputs.append(out)
+        if context is not None and callable(getattr(context, "set_state", None)):
+            context.set_state(f"system_analyst.output.chunk_{idx + 1}", out)
+
+    output = deduplicate_output("\n\n".join(item for item in chunk_outputs if str(item).strip()))
+
+    # Ensure supporting documents are present in final output. If the agent
+    # did not include the provided `requirement_doc` or `architecture_doc`,
+    # append them under a clear heading so downstream pipelines can consume
+    # them (and so API callers can see the inputs echoed back).
+    try:
+        if context is not None and isinstance(getattr(context, "state", None), dict):
+            req = str(context.state.get("requirement_doc", "") or "").strip()
+            arch = str(context.state.get("architecture_doc", "") or "").strip()
+            append_parts: list[str] = []
+            if req and req not in output:
+                append_parts.append("## Supporting Documents\n\n**Requirements Document:**\n" + req)
+            if arch and arch not in output:
+                append_parts.append("\n**Architecture Document:**\n" + arch)
+            if append_parts:
+                output = (str(output).rstrip() + "\n\n" + "\n\n".join(append_parts)).strip()
+    except Exception:
+        # Non-fatal: if anything goes wrong here, keep original output
+        pass
+
+    if context is not None and callable(getattr(context, "set_state", None)):
+        context.set_state("system_analyst.output", output)
+    if context is not None and callable(getattr(context, "record", None)):
+        context.record(agent_name="system_analyst_agent", event="completed")
+
+    duration_seconds = time.perf_counter() - started_at
+    if mlflow_module is not None and mlflow_run_started:
+        try:
+            mlflow_module.log_metric("duration_seconds", float(duration_seconds))
+            mlflow_module.log_metric("output_length", float(len(output)))
+            mlflow_module.log_param("chunk_count", len(goal_chunks))
+            mlflow_module.end_run(status="FINISHED")
+        except Exception as exc:
+            logger.debug("MLflow run finalize skipped: %s", exc)
+
+    return output
+
+
+# ---------------- MAIN ----------------
+def main():
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+    logger.info("Starting system analyst standalone run")
+    load_environment()
+
+    user_goal = "Create a one page marketing website using NextJS ."
+    logger.info("Executing analyst run")
+    output = run_system_analysis(user_goal=user_goal)
+
+    if output:
+        logger.info("System analyst run completed successfully")
+        print(output)
+    else:
+        logger.warning("System analyst produced no output")
+        print("No output generated.")
+
+
+if __name__ == "__main__":
+    main()

@@ -114,6 +114,31 @@ Provide step-by-step flow of how data moves through the system:
 - CI/CD pipelines
 """
 
+# ✅ CHUNKING UTILITY (ADDED)
+def chunk_text(text: str, chunk_size: int = 4000, overlap: int = 200) -> list[str]:
+    """
+    Split text into chunks with optional overlap.
+    """
+    overlap = min(overlap, chunk_size - 1)
+    if len(text) <= chunk_size:
+        return [text]
+    
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        if end < len(text):
+            # Find a good break point (sentence end)
+            for i in range(min(overlap, chunk_size)):
+                if text[end - i] in '.!?\n':
+                    end -= i
+                    break
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        start = max(0, end - overlap) if end < len(text) else end
+    return chunks
+
 warnings.filterwarnings(
     "ignore",
     message=r".*deprecated.*",
@@ -229,14 +254,29 @@ def run_system_architect(
             detail=str(input_document)[:150],
         )
 
-    result = agent.run(
-        input_document=input_document,
-        context=context if context else None
-    )
-
-    output = normalize_output(
-        result.output if hasattr(result, "output") else result
-    )
+    # 🔥 CHUNKING: If input is too long, process in chunks
+    chunks = chunk_text(input_document, chunk_size=8000, overlap=500)
+    if len(chunks) == 1:
+        # Single chunk, process as before
+        result = agent.run(
+            input_document=input_document,
+            context=context if context else None
+        )
+        output = normalize_output(
+            result.output if hasattr(result, "output") else result
+        )
+    else:
+        # Multiple chunks, process each and combine
+        outputs = []
+        for chunk in chunks:
+            result = agent.run(
+                input_document=chunk,
+                context=context if context else None
+            )
+            outputs.append(normalize_output(
+                result.output if hasattr(result, "output") else result
+            ))
+        output = "\n\n".join(outputs)
 
     # ✅ SAVE OUTPUT TO STATE ALSO
     state = ArchitectState()

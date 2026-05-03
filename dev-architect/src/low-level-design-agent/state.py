@@ -3,6 +3,8 @@ from typing import TypedDict
 
 class LLDAgentState(TypedDict):
     lld_input: str
+    requirement_doc: str
+    architecture_doc: str
     sections: str
     architecture_analysis: str
     final_report: str

@@ -1,3 +1,6 @@
-from agent.graph import graph
+"""System Analyst Agent Package.
 
-__all__ = ["graph"]
+Analyzes user goals and produces system requirements.
+"""
+
+__version__ = "0.1.0"
