@@ -57,6 +57,9 @@ from db import (
     save_lld_document,
     get_lld_document,
     get_all_lld_documents,
+    save_system_architecture_document,
+    save_lld_backend_document,
+    get_latest_system_architecture_document,
 )
 
 # Supervisor, System Analyst, Low-level Design agents
@@ -273,20 +276,23 @@ def generate_backend_lld(
         output = run_backend_lld(lld_input=lld_input)
 
         session_id = str(uuid.uuid4())
+        
+        # Get latest architecture if available
+        arch_doc = get_latest_system_architecture_document(db=db)
+        arch_doc_id = arch_doc.id if arch_doc else None
 
-        doc = save_lld_document(
+        doc = save_lld_backend_document(
             db=db,
-            agent_type="backend_lld",
             user_input=request.user_input,
             output=output,
             requirement_doc=request.requirement_doc,
-            architecture_doc=request.architecture_doc,
+            architecture_doc_id=arch_doc_id,
             session_id=session_id,
         )
 
         return LLDDocumentResponse(
             id=doc.id,
-            agent_type=doc.agent_type,
+            agent_type="backend_lld",
             user_input=doc.user_input,
             output=doc.output,
             session_id=doc.session_id or "",
@@ -316,20 +322,17 @@ def generate_architecture(
             input_document = f"{request.user_input}\n\n{request.requirement_doc}"
 
         output = run_system_architect(input_document=input_document)
-
-        session_id = str(uuid.uuid4())
-
-        doc = save_lld_document(
+system_architecture_document(
             db=db,
-            agent_type="system_architecture",
-            user_input=request.user_input,
+            analyst_document=input_document,
             output=output,
-            requirement_doc=request.requirement_doc,
-            architecture_doc=request.architecture_doc,
             session_id=session_id,
         )
 
         return LLDDocumentResponse(
+            id=doc.id,
+            agent_type="system_architecture",
+            user_input=input_documen
             id=doc.id,
             agent_type=doc.agent_type,
             user_input=doc.user_input,
