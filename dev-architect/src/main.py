@@ -322,7 +322,10 @@ def generate_architecture(
             input_document = f"{request.user_input}\n\n{request.requirement_doc}"
 
         output = run_system_architect(input_document=input_document)
-system_architecture_document(
+
+        session_id = str(uuid.uuid4())
+
+        doc = save_system_architecture_document(
             db=db,
             analyst_document=input_document,
             output=output,
@@ -332,10 +335,7 @@ system_architecture_document(
         return LLDDocumentResponse(
             id=doc.id,
             agent_type="system_architecture",
-            user_input=input_documen
-            id=doc.id,
-            agent_type=doc.agent_type,
-            user_input=doc.user_input,
+            user_input=input_document,
             output=doc.output,
             session_id=doc.session_id or "",
             created_at=str(doc.created_at),

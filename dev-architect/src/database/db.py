@@ -9,7 +9,7 @@ from typing import Optional, List
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 
-from models import Base, LLDDocument
+from models import Base, LLDDocument, SystemArchitectureDocument, LLDBackendDocument
 
 logger = logging.getLogger(__name__)
 
@@ -106,3 +106,120 @@ def get_all_lld_documents(db: Session, agent_type: str = None) -> List[LLDDocume
     if agent_type:
         query = query.filter(LLDDocument.agent_type == agent_type)
     return query.order_by(LLDDocument.created_at.desc()).all()
+
+
+# ── SYSTEM ARCHITECT AGENT CRUD HELPERS ───────────────────────────────────────
+
+def save_system_architecture_document(
+    db: Session,
+    analyst_document: str,
+    output: str,
+    session_id: str = "",
+) -> SystemArchitectureDocument:
+    """
+    Save a generated System Architecture document to the database.
+
+    Parameters
+    ----------
+    db                 : SQLAlchemy session
+    analyst_document   : the analyst document that was input
+    output             : generated architecture markdown content
+    session_id         : AgentContext session ID
+
+    Returns
+    -------
+    SystemArchitectureDocument : the saved record
+    """
+    doc = SystemArchitectureDocument(
+        analyst_document=analyst_document,
+        output=output,
+        session_id=session_id,
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    logger.info(
+        "Saved SystemArchitectureDocument to database. ID=%d session_id=%s",
+        doc.id, session_id,
+    )
+    return doc
+
+
+def get_system_architecture_document(db: Session, doc_id: int) -> Optional[SystemArchitectureDocument]:
+    """Retrieve a single System Architecture document by ID."""
+    return db.query(SystemArchitectureDocument).filter(SystemArchitectureDocument.id == doc_id).first()
+
+
+def get_all_system_architecture_documents(db: Session) -> List[SystemArchitectureDocument]:
+    """Retrieve all System Architecture documents."""
+    return db.query(SystemArchitectureDocument).order_by(SystemArchitectureDocument.created_at.desc()).all()
+
+
+def get_latest_system_architecture_document(db: Session) -> Optional[SystemArchitectureDocument]:
+    """Retrieve the most recent System Architecture document."""
+    return db.query(SystemArchitectureDocument).order_by(SystemArchitectureDocument.created_at.desc()).first()
+
+
+# ── LLD BACKEND AGENT CRUD HELPERS ─────────────────────────────────────────────
+
+def save_lld_backend_document(
+    db: Session,
+    user_input: str,
+    output: str,
+    requirement_doc: str = "",
+    architecture_doc_id: int = None,
+    session_id: str = "",
+) -> LLDBackendDocument:
+    """
+    Save a generated Backend LLD document to the database.
+
+    Parameters
+    ----------
+    db                 : SQLAlchemy session
+    user_input         : original user request
+    output             : generated backend LLD markdown content
+    requirement_doc    : requirements document input
+    architecture_doc_id: foreign key reference to SystemArchitectureDocument
+    session_id         : AgentContext session ID
+
+    Returns
+    -------
+    LLDBackendDocument : the saved record
+    """
+    doc = LLDBackendDocument(
+        user_input=user_input,
+        requirement_doc=requirement_doc,
+        architecture_doc_id=architecture_doc_id,
+        output=output,
+        session_id=session_id,
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    logger.info(
+        "Saved LLDBackendDocument to database. ID=%d session_id=%s",
+        doc.id, session_id,
+    )
+    return doc
+
+
+def get_lld_backend_document(db: Session, doc_id: int) -> Optional[LLDBackendDocument]:
+    """Retrieve a single Backend LLD document by ID."""
+    return db.query(LLDBackendDocument).filter(LLDBackendDocument.id == doc_id).first()
+
+
+def get_all_lld_backend_documents(db: Session) -> List[LLDBackendDocument]:
+    """Retrieve all Backend LLD documents."""
+    return db.query(LLDBackendDocument).order_by(LLDBackendDocument.created_at.desc()).all()
+
+
+def get_lld_backend_documents_by_architecture(db: Session, architecture_doc_id: int) -> List[LLDBackendDocument]:
+    """Retrieve all Backend LLD documents linked to a specific System Architecture document."""
+    return db.query(LLDBackendDocument).filter(
+        LLDBackendDocument.architecture_doc_id == architecture_doc_id
+    ).order_by(LLDBackendDocument.created_at.desc()).all()
+
+
+def get_latest_lld_backend_document(db: Session) -> Optional[LLDBackendDocument]:
+    """Retrieve the most recent Backend LLD document."""
+    return db.query(LLDBackendDocument).order_by(LLDBackendDocument.created_at.desc()).first()
