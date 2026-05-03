@@ -163,6 +163,26 @@ def _resolve_user_goal(
     return "Unknown goal"
 
 
+def _resolve_lld_docs(
+    context: "AgentContext | None" = None,
+    state: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    requirement_doc = ""
+    architecture_doc = ""
+
+    if context is not None:
+        ctx_state = getattr(context, "state", None)
+        if isinstance(ctx_state, dict):
+            requirement_doc = str(ctx_state.get("requirement_doc", "")).strip()
+            architecture_doc = str(ctx_state.get("architecture_doc", "")).strip()
+
+    if isinstance(state, dict):
+        requirement_doc = requirement_doc or str(state.get("requirement_doc", "")).strip()
+        architecture_doc = architecture_doc or str(state.get("architecture_doc", "")).strip()
+
+    return requirement_doc, architecture_doc
+
+
 def _register_agent_adk_package() -> None:
     """Expose src/agent-adk as importable package name `reusableagents`."""
     if "reusableagents" in sys.modules:
@@ -220,11 +240,18 @@ validator = OutputValidator(
 react_prompt = (
     PromptBuilder()
     .add_system(
-        "You are a precise low-level design generator for a one-page marketing website. "
-        "Follow the task exactly and return only the requested output.",
+        "You are a precise low-level design generator. Follow the task exactly, "
+        "treat the user goal, requirements document, and architecture document "
+        "as equally important inputs, and return only the requested output.",
         name="persona",
     )
-    .add_user("{task}", name="task")
+    .add_user(
+        "{task}\n\n"
+        "Balanced Input Requirement: Keep the user goal, requirements document, "
+        "and architecture document in balance. Do not let any one source override "
+        "the others.",
+        name="task",
+    )
 )
 
 react_agent = ReusableReActAgent(
@@ -273,6 +300,7 @@ def extract_sections(
     logger.info("LLD stage: extract_sections")
     document = state["lld_input"]
     user_goal = _resolve_user_goal(context=context, state=state)
+    requirement_doc, architecture_doc = _resolve_lld_docs(context=context, state=state)
     chunk_size, chunk_overlap = _get_chunking_config()
     doc_chunks = _chunk_text(document, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
@@ -284,6 +312,8 @@ def extract_sections(
         prompt = SECTION_EXTRACTION_PROMPT.format(
             document=chunk,
             user_goal=user_goal,
+            requirement_doc=requirement_doc,
+            architecture_doc=architecture_doc,
         )
         result = _run_task(prompt, context=context)
         chunk_outputs.append(result)
@@ -303,6 +333,7 @@ def analyze_architecture(
     logger.info("LLD stage: analyze_architecture")
     sections = state["sections"]
     user_goal = _resolve_user_goal(context=context, state=state)
+    requirement_doc, architecture_doc = _resolve_lld_docs(context=context, state=state)
     chunk_size, chunk_overlap = _get_chunking_config()
     section_chunks = _chunk_text(sections, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
@@ -314,6 +345,8 @@ def analyze_architecture(
         prompt = ARCHITECTURE_ANALYSIS_PROMPT.format(
             sections=chunk,
             user_goal=user_goal,
+            requirement_doc=requirement_doc,
+            architecture_doc=architecture_doc,
         )
         result = _run_task(prompt, context=context)
         chunk_outputs.append(result)
@@ -333,6 +366,7 @@ def generate_report(
     logger.info("LLD stage: generate_report")
     analysis = state["architecture_analysis"]
     user_goal = _resolve_user_goal(context=context, state=state)
+    requirement_doc, architecture_doc = _resolve_lld_docs(context=context, state=state)
     chunk_size, chunk_overlap = _get_chunking_config()
     analysis_chunks = _chunk_text(analysis, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
@@ -344,6 +378,8 @@ def generate_report(
         prompt = REPORT_GENERATION_PROMPT.format(
             analysis=chunk,
             user_goal=user_goal,
+            requirement_doc=requirement_doc,
+            architecture_doc=architecture_doc,
         )
         result = _run_task(prompt, context=context)
         chunk_outputs.append(result)
@@ -358,13 +394,19 @@ def generate_report(
 
 def run_pipeline(
     lld_input: str,
+    requirement_doc: str = "",
+    architecture_doc: str = "",
     context: "AgentContext | None" = None,
 ) -> dict[str, str]:
     logger.info("Starting LLD standalone pipeline")
     if context is not None and callable(getattr(context, "record", None)):
         context.record(agent_name="lld_agent", event="started", detail=str(lld_input)[:160])
 
-    state = {"lld_input": lld_input}
+    state = {
+        "lld_input": lld_input,
+        "requirement_doc": requirement_doc,
+        "architecture_doc": architecture_doc,
+    }
     state.update(extract_sections(state, context=context))
     state.update(analyze_architecture(state, context=context))
     state.update(generate_report(state, context=context))

@@ -18,6 +18,10 @@ def setup_logging() -> None:
 
 def setup_mlflow() -> None:
     """Configure MLflow if installed; no-op when unavailable."""
+    enabled = os.getenv("SYSTEM_ANALYST_OBSERVABILITY_ENABLED", "0").strip().lower()
+    if enabled in {"0", "false", "no", "off"}:
+        return
+
     try:
         import mlflow  # type: ignore[reportMissingImports]
     except Exception as exc:  # pragma: no cover - depends on runtime environment

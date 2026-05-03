@@ -8,12 +8,14 @@ import sys
 import types
 import importlib
 import logging
-import warnings
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+logger = logging.getLogger(__name__)
+
 # ============================================================
-# ✅ REGISTER ADK (MOVED UP)
+# ✅ REGISTER ADK
 # ============================================================
 
 def register_agent_adk():
@@ -35,26 +37,27 @@ def register_agent_adk():
 
 register_agent_adk()
 
-from .prompts import BACKEND_LLD_PROMPT, BACKEND_LLD_TASK
+# ✅ KEY FIX: import build_backend_lld_prompt instead of BACKEND_LLD_PROMPT
+from .prompts import build_backend_lld_prompt, BACKEND_LLD_TASK
 
 if TYPE_CHECKING:
     from reusableagents.context import AgentContext  # type: ignore
 
 
 # ============================================================
-# ✅ LOAD COMPONENTS (KEEPED)
+# ✅ LOAD COMPONENTS
 # ============================================================
 
 def load_adk_components():
-    react_mod = importlib.import_module("reusableagents.agents.react_agent")
-    config_mod = importlib.import_module("reusableagents.config.settings")
-    validator_mod = importlib.import_module("reusableagents.agents.validator")
-    llm_mod = importlib.import_module("reusableagents.llm.gemini")
+    react_mod   = importlib.import_module("reusableagents.agents.react_agent")
+    config_mod  = importlib.import_module("reusableagents.config.settings")
+    valid_mod   = importlib.import_module("reusableagents.agents.validator")
+    llm_mod     = importlib.import_module("reusableagents.llm.gemini")
 
     return (
         react_mod.ReusableReActAgent,
         config_mod.AgentConfig,
-        validator_mod.OutputValidator,
+        valid_mod.OutputValidator,
         config_mod.GeminiConfig,
         llm_mod.create_agent_llm,
         llm_mod.create_validator_llm,
@@ -62,10 +65,11 @@ def load_adk_components():
 
 
 # ============================================================
-# ✅ BUILD AGENT (SLIGHT FIX → GENERATION FOCUSED)
+# ✅ BUILD AGENT
+# ✅ KEY FIX: accepts prompt parameter so lld_input is baked in
 # ============================================================
 
-def build_agent():
+def build_agent(prompt):
     (
         ReusableReActAgent,
         AgentConfig,
@@ -84,28 +88,47 @@ def build_agent():
         validator_temperature=0.0,
     )
 
-    agent_llm = create_agent_llm(gemini_config)
+    agent_llm     = create_agent_llm(gemini_config)
     validator_llm = create_validator_llm(gemini_config)
-
-    # 🔥 IMPORTANT: validator kept but won't override generation
-    validator = OutputValidator(llm=validator_llm)
+    validator     = OutputValidator(llm=validator_llm)
 
     return ReusableReActAgent(
         tools=[],
         llm=agent_llm,
-        prompt_builder=BACKEND_LLD_PROMPT,
+        prompt_builder=prompt,          # ✅ baked-in prompt passed here
         validator=validator,
         config=AgentConfig(
-            max_react_iterations=3,   # 🔥 reduce overthinking
-            enable_validation=True,   # keep workflow
-            validation_score_threshold=0.5,  # 🔥 avoid blocking output
-            max_refinement_attempts=1,  # 🔥 prevent rewriting into review
+            max_react_iterations=3,
+            enable_validation=True,
+            validation_score_threshold=0.5,
+            max_refinement_attempts=1,
         ),
     )
 
 
 # ============================================================
-# ✅ DEFAULT INPUT (KEEPED)
+# ✅ CREATE CONTEXT
+# ============================================================
+
+def create_context(
+    user_input: str,
+    requirement_doc: str,
+    architecture_doc: str | None = None,
+) -> "AgentContext":
+    from reusableagents.context import AgentContext, SessionInfo
+
+    state = {"user_input": user_input, "requirement_doc": requirement_doc}
+    if architecture_doc is not None:
+        state["architecture_doc"] = architecture_doc
+
+    return AgentContext(
+        session=SessionInfo(session_id=str(uuid.uuid4()), metadata={}),
+        state=state,
+    )
+
+
+# ============================================================
+# ✅ DEFAULT INPUT
 # ============================================================
 
 LLD_INPUT = """
@@ -116,35 +139,30 @@ Focus on static content, performance, SEO, and responsiveness.
 
 
 # ============================================================
-# ✅ CHUNKING UTILITY (ADDED)
+# ✅ CHUNKING UTILITY
 # ============================================================
 
-def chunk_text(text: str, chunk_size: int = 4000, overlap: int = 200) -> list[str]:
-    """
-    Split text into chunks with optional overlap.
-    """
+def chunk_text(text: str, chunk_size: int = 8000, overlap: int = 500) -> list[str]:
     if len(text) <= chunk_size:
         return [text]
-    
+
     chunks = []
     start = 0
     while start < len(text):
         end = start + chunk_size
         if end < len(text):
-            # Find a good break point (sentence or word boundary)
             for i in range(min(overlap, chunk_size)):
-                if end - i > start and text[end - i] in '.!?\n':
+                if end - i > start and text[end - i] in ".!?\n":
                     end = end - i + 1
                     break
             else:
-                # Fallback to word boundary
-                while end > start and text[end - 1] not in ' \t\n':
+                while end > start and text[end - 1] not in " \t\n":
                     end -= 1
         chunk = text[start:end].strip()
         if chunk:
             chunks.append(chunk)
         start = end - overlap if overlap > 0 else end
-    
+
     return chunks
 
 
@@ -152,19 +170,30 @@ def _resolve_lld_input(
     lld_input: str | None = None,
     context: "AgentContext | None" = None,
 ) -> str:
+    # Priority: explicit lld_input param > requirement_doc in context > lld_input in context
     if str(lld_input or "").strip():
         return str(lld_input).strip()
 
     if isinstance(getattr(context, "state", None), dict):
-        val = str(context.state.get("lld_input", "")).strip()
-        if val:
-            return val
+        # Accept an explicit requirements doc if provided by the caller
+        req = str(context.state.get("requirement_doc", "")).strip()
+        if req:
+            return req
+
+        # Accept system analyst or prior LLD outputs as fallback
+        for key in ("lld.output", "system_analyst.output", "system_architect.output", "lld_input"):
+            val = str(context.state.get(key, "")).strip()
+            if val:
+                return val
 
     return ""
 
 
 # ============================================================
-# ✅ RUN AGENT (FIXED → FORCE CLEAN OUTPUT + CHUNKING)
+# ✅ RUN AGENT
+# ✅ KEY FIX: build_backend_lld_prompt(chunk) called per chunk
+#    so lld_input is always baked into the prompt — no {task}
+#    substitution needed or relied upon.
 # ============================================================
 
 def run_backend_lld(
@@ -172,23 +201,33 @@ def run_backend_lld(
     context: "AgentContext | None" = None,
 ) -> str:
 
-    agent = build_agent()
-
     resolved_input = _resolve_lld_input(lld_input, context)
 
     if not resolved_input:
         raise ValueError("lld_input is required")
 
-    # 🔥 CHUNKING: If input is too long, process in chunks
     chunks = chunk_text(resolved_input, chunk_size=8000, overlap=500)
-    
-    if len(chunks) == 1:
-        # Single chunk, process as before
-        task = BACKEND_LLD_TASK.format(lld_input=resolved_input)
+    outputs = []
+
+    for i, chunk in enumerate(chunks):
+
+        # ✅ Build a fresh prompt with this chunk baked in
+        prompt = build_backend_lld_prompt(chunk)
+
+        # ✅ Build a fresh agent with that prompt
+        agent = build_agent(prompt)
+
+        # ✅ task string is now just a trigger label — the real
+        #    content is already inside the user prompt above
+        task_label = (
+            f"Generate Backend LLD"
+            if len(chunks) == 1
+            else f"Generate Backend LLD — part {i + 1} of {len(chunks)}"
+        )
 
         run_kwargs = {
-            "task": task,
-            "state": {"lld_input": resolved_input},
+            "task": task_label,
+            "state": {"lld_input": chunk},
         }
 
         if context is not None:
@@ -201,53 +240,26 @@ def run_backend_lld(
             if hasattr(response, "output")
             else str(response)
         )
-    else:
-        # Multiple chunks, process each and combine
-        outputs = []
-        for i, chunk in enumerate(chunks):
-            chunk_task = BACKEND_LLD_TASK.format(lld_input=chunk)
-            chunk_task = (
-                f"{chunk_task}\n\nProcessing chunk {i+1}/{len(chunks)}:\n{chunk}"
-            )
-            run_kwargs = {
-                "task": chunk_task,
-                "state": {"lld_input": chunk},
-            }
+        outputs.append(output)
 
-            if context is not None:
-                run_kwargs["context"] = context
+    combined = "\n\n---\n\n".join(outputs)
 
-            response = agent.run(**run_kwargs)
-
-            chunk_output = (
-                response.output
-                if hasattr(response, "output")
-                else str(response)
-            )
-            outputs.append(chunk_output)
-        
-        # Combine outputs
-        output = "\n\n".join(outputs)
-
-    # 🔥 FORCE CLEAN LLD OUTPUT (NO REVIEW TEXT)
-    # 🔥 REMOVE accidental "review-style" phrases
-    blacklist = ["review", "strength", "weakness", "analysis"]
+    # Strip accidental review-style words
+    blacklist = ["review", "strength", "weakness"]
     for word in blacklist:
-        output = output.replace(word, "")
+        combined = combined.replace(word, "")
 
-    return output.strip()
+    return combined.strip()
 
 
 # ============================================================
-# ✅ MAIN (KEEPED)
+# ✅ MAIN
 # ============================================================
 
 def main():
     try:
         output = run_backend_lld(lld_input=LLD_INPUT)
-
-        print(output)  # ✅ ONLY FINAL LLD OUTPUT
-
+        print(output)
     except Exception:
         logger.exception("Execution failed")
         raise

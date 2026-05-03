@@ -9,7 +9,7 @@ from langchain_google_vertexai import ChatVertexAI
 from langgraph.graph import StateGraph, START, END
 
 from configuration import AgentConfig, register_agent_adk
-from prompts import BACKEND_LLD_PROMPT, BACKEND_LLD_TASK
+from prompts import build_backend_lld_prompt, BACKEND_LLD_TASK
 from state import BackendLLDState
 
 
@@ -48,17 +48,18 @@ def build_graph():
     )
 
     # ---------- Agent ----------
-    react_agent = ReusableReActAgent(
-        tools=[],
-        llm=llm,
-        prompt_builder=BACKEND_LLD_PROMPT,
-        validator=validator,
-        config=agent_config,
-    )
-
     # ---------- Node ----------
     def generate_backend_lld(state: BackendLLDState):
-        task = BACKEND_LLD_TASK.format(lld_input=state["lld_input"])
+        lld_input = state["lld_input"]
+        task = BACKEND_LLD_TASK.format(lld_input=lld_input)
+
+        react_agent = ReusableReActAgent(
+            tools=[],
+            llm=llm,
+            prompt_builder=build_backend_lld_prompt(lld_input),
+            validator=validator,
+            config=agent_config,
+        )
 
         response = react_agent.run(task=task)
 
