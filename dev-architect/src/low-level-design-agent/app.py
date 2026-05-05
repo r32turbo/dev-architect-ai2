@@ -33,21 +33,24 @@ llm = ChatGroq(
 
 def extract_sections(state: LLDAgentState) -> dict[str, str]:
     document = state["lld_input"]
-    prompt = SECTION_EXTRACTION_PROMPT.format(document=document)
+    safe_document = document.replace("{", "{{").replace("}", "}}") if isinstance(document, str) else document
+    prompt = SECTION_EXTRACTION_PROMPT.format(document=safe_document)
     response = llm.invoke([HumanMessage(content=prompt)])
     return {"sections": response.content}
 
 
 def analyze_architecture(state: LLDAgentState) -> dict[str, str]:
     sections = state["sections"]
-    prompt = ARCHITECTURE_ANALYSIS_PROMPT.format(sections=sections)
+    safe_sections = sections.replace("{", "{{").replace("}", "}}") if isinstance(sections, str) else sections
+    prompt = ARCHITECTURE_ANALYSIS_PROMPT.format(sections=safe_sections)
     response = llm.invoke([HumanMessage(content=prompt)])
     return {"architecture_analysis": response.content}
 
 
 def generate_report(state: LLDAgentState) -> dict[str, str]:
     analysis = state["architecture_analysis"]
-    prompt = REPORT_GENERATION_PROMPT.format(analysis=analysis)
+    safe_analysis = analysis.replace("{", "{{").replace("}", "}}") if isinstance(analysis, str) else analysis
+    prompt = REPORT_GENERATION_PROMPT.format(analysis=safe_analysis)
     response = llm.invoke([HumanMessage(content=prompt)])
     return {"final_report": response.content}
 
