@@ -1,22 +1,29 @@
 """
-graph.py
+frontend_graph.py
 Builds and returns the ReusableReActAgent for the Frontend LLD Agent.
-Uses AgentContext from the updated agent-adk.
+Includes MLflow observability — structured logging + native MLflow tracing.
 """
-import logging
 import importlib
 import importlib.util
 import sys
 from pathlib import Path
 
-# Import this agent's own modules strictly by file path
+# ── Add agent dir to path ─────────────────────────────────────────────────────
 _AGENT_DIR = str(Path(__file__).resolve().parent)
 if _AGENT_DIR not in sys.path:
     sys.path.insert(0, _AGENT_DIR)
 
+_SRC_DIR = str(Path(__file__).resolve().parents[1])
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
+# ── Observability ─────────────────────────────────────────────────────────────
+from observability.observability import get_logger, trace_agent
+
+logger = get_logger(__name__)
+
 
 def _import_from_agent(module_name: str):
-    """Import a module strictly from this agent's own directory."""
     spec = importlib.util.spec_from_file_location(
         f"frontend_lld_agent.{module_name}",
         Path(__file__).resolve().parent / f"{module_name}.py",
@@ -26,8 +33,9 @@ def _import_from_agent(module_name: str):
     return mod
 
 
-_configuration = _import_from_agent("frontend_configuration")
-_prompts       = _import_from_agent("frontend_prompts")
+# ── Load agent modules ────────────────────────────────────────────────────────
+_configuration       = _import_from_agent("frontend_configuration")
+_prompts             = _import_from_agent("frontend_prompts")
 
 register_agent_adk   = _configuration.register_agent_adk
 GeminiConfig         = _configuration.GeminiConfig
@@ -38,8 +46,6 @@ FRONTEND_LLD_PROMPT  = _prompts.FRONTEND_LLD_PROMPT
 
 register_agent_adk()
 
-logger = logging.getLogger(__name__)
-
 ReusableReActAgent = importlib.import_module("reusableagents.agents.react_agent").ReusableReActAgent
 OutputValidator    = importlib.import_module("reusableagents.agents.validator").OutputValidator
 AgentContext       = importlib.import_module("reusableagents.context").AgentContext
@@ -47,20 +53,10 @@ SessionInfo        = importlib.import_module("reusableagents.context").SessionIn
 AuthInfo           = importlib.import_module("reusableagents.context").AuthInfo
 
 
-def build_agent() -> ReusableReActAgent:
-    """
-    Build and return the Frontend LLD ReAct agent.
-    Called by the supervisor or main.py with:
-        agent.run(
-            context=ctx,
-            user_input=...,
-            requirement_doc=...,
-            architecture_doc=...,
-        )
-    """
+def build_agent():
+    """Build and return the Frontend LLD ReAct agent."""
     logger.info("Building Frontend LLD Agent ...")
 
-    # Step 1 – LLM config using GeminiConfig
     gemini_config = GeminiConfig(
         project_id="eds-alchemy",
         location="us-central1",
@@ -74,7 +70,6 @@ def build_agent() -> ReusableReActAgent:
     validator_llm = create_validator_llm(gemini_config)
     logger.info("LLMs created using GeminiConfig.")
 
-    # Step 2 – Behavioural config
     agent_config = AgentConfig(
         max_react_iterations=5,
         enable_validation=True,
@@ -82,13 +77,11 @@ def build_agent() -> ReusableReActAgent:
         max_refinement_attempts=2,
     )
 
-    # Step 3 – Validator
     validator = OutputValidator(
         llm=validator_llm,
         score_threshold=agent_config.validation_score_threshold,
     )
 
-    # Step 4 – Assemble agent
     agent = ReusableReActAgent(
         tools=[],
         llm=agent_llm,
@@ -101,11 +94,26 @@ def build_agent() -> ReusableReActAgent:
     return agent
 
 
+@trace_agent("frontend_lld")
+def run_agent(agent, context, user_input, requirement_doc, architecture_doc):
+    """Run the Frontend LLD agent with MLflow tracing."""
+    logger.info("Running Frontend LLD Agent. session_id=%s", context.session.session_id)
+    response = agent.run(
+        context=context,
+        user_input=user_input,
+        requirement_doc=requirement_doc,
+        architecture_doc=architecture_doc,
+    )
+    logger.info(
+        "Frontend LLD completed. score=%.2f refined=%s",
+        response.validation_score or 0,
+        response.was_refined,
+    )
+    return response
+
+
 def create_context(user_id: str = "api-user", session_metadata: dict = None) -> AgentContext:
-    """
-    Create an AgentContext for the Frontend LLD Agent.
-    Called by main.py / FastAPI to create a context per request.
-    """
+    """Create an AgentContext for the Frontend LLD Agent."""
     return AgentContext(
         session=SessionInfo(
             metadata=session_metadata or {"source": "frontend-lld-agent"},
