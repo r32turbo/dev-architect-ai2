@@ -21,6 +21,23 @@ try:
 except ImportError:
     from state import ArchitectState
 
+# ✅ REGISTER ADK PATHS EARLY
+ADK_ROOT = Path(__file__).resolve().parents[1] / "agent-adk"
+if str(ADK_ROOT) not in sys.path:
+    sys.path.insert(0, str(ADK_ROOT))
+
+if "reusableagents" not in sys.modules:
+    reusableagents_pkg = types.ModuleType("reusableagents")
+    reusableagents_pkg.__path__ = [str(ADK_ROOT)]
+    sys.modules["reusableagents"] = reusableagents_pkg
+
+try:
+    from reusableagents.context import AgentContext, SessionInfo, AuthInfo  # type: ignore
+except ImportError:  # pragma: no cover
+    AgentContext = None  # type: ignore
+    SessionInfo = None  # type: ignore
+    AuthInfo = None  # type: ignore
+
 if TYPE_CHECKING:
     from reusableagents.context import AgentContext  # type: ignore
 
@@ -224,6 +241,47 @@ def build_agent(context: "AgentContext | None" = None):
             enable_validation=False,
             max_refinement_attempts=2,
         ),
+    )
+
+
+def create_context(
+    user_input: str = "",
+    requirement_doc: str = "",
+    user_id: str = "api-user",
+    session_metadata: dict | None = None,
+) -> "AgentContext":
+    """
+    Create an AgentContext for the System Architecture Agent.
+    """
+    global AgentContext, SessionInfo, AuthInfo
+
+    if AgentContext is None or SessionInfo is None or AuthInfo is None:
+        try:
+            from reusableagents.context import AgentContext as _AgentContext, SessionInfo as _SessionInfo, AuthInfo as _AuthInfo  # type: ignore
+            AgentContext, SessionInfo, AuthInfo = _AgentContext, _SessionInfo, _AuthInfo
+        except ImportError as exc:
+            raise ImportError(
+                "reusableagents.context imports failed; ensure the agent ADK is available"
+            ) from exc
+
+    metadata = {
+        "source": "system_architect_agent",
+        "requirement_doc": requirement_doc,
+    }
+    if session_metadata:
+        metadata.update(session_metadata)
+
+    return AgentContext(
+        session=SessionInfo(metadata=metadata),
+        auth=AuthInfo(
+            user_id=user_id,
+            roles=["lld-generator"],
+            permissions=["generate", "read"],
+        ),
+        state={
+            "user_input": user_input,
+            "requirement_doc": requirement_doc,
+        },
     )
 
 # ---------------- NORMALIZATION ----------------
