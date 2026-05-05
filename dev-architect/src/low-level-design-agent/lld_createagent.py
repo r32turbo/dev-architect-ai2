@@ -309,11 +309,15 @@ def extract_sections(
 
     chunk_outputs: list[str] = []
     for idx, chunk in enumerate(doc_chunks):
+        safe_chunk = chunk.replace("{", "{{").replace("}", "}}") if isinstance(chunk, str) else chunk
+        safe_user_goal = user_goal.replace("{", "{{").replace("}", "}}") if isinstance(user_goal, str) else user_goal
+        safe_requirement = requirement_doc.replace("{", "{{").replace("}", "}}") if isinstance(requirement_doc, str) else requirement_doc
+        safe_architecture = architecture_doc.replace("{", "{{").replace("}", "}}") if isinstance(architecture_doc, str) else architecture_doc
         prompt = SECTION_EXTRACTION_PROMPT.format(
-            document=chunk,
-            user_goal=user_goal,
-            requirement_doc=requirement_doc,
-            architecture_doc=architecture_doc,
+            document=safe_chunk,
+            user_goal=safe_user_goal,
+            requirement_doc=safe_requirement,
+            architecture_doc=safe_architecture,
         )
         result = _run_task(prompt, context=context)
         chunk_outputs.append(result)
@@ -342,11 +346,15 @@ def analyze_architecture(
 
     chunk_outputs: list[str] = []
     for idx, chunk in enumerate(section_chunks):
+        safe_chunk = chunk.replace("{", "{{").replace("}", "}}") if isinstance(chunk, str) else chunk
+        safe_user_goal = user_goal.replace("{", "{{").replace("}", "}}") if isinstance(user_goal, str) else user_goal
+        safe_requirement = requirement_doc.replace("{", "{{").replace("}", "}}") if isinstance(requirement_doc, str) else requirement_doc
+        safe_architecture = architecture_doc.replace("{", "{{").replace("}", "}}") if isinstance(architecture_doc, str) else architecture_doc
         prompt = ARCHITECTURE_ANALYSIS_PROMPT.format(
-            sections=chunk,
-            user_goal=user_goal,
-            requirement_doc=requirement_doc,
-            architecture_doc=architecture_doc,
+            sections=safe_chunk,
+            user_goal=safe_user_goal,
+            requirement_doc=safe_requirement,
+            architecture_doc=safe_architecture,
         )
         result = _run_task(prompt, context=context)
         chunk_outputs.append(result)
@@ -375,11 +383,15 @@ def generate_report(
 
     chunk_outputs: list[str] = []
     for idx, chunk in enumerate(analysis_chunks):
+        safe_chunk = chunk.replace("{", "{{").replace("}", "}}") if isinstance(chunk, str) else chunk
+        safe_user_goal = user_goal.replace("{", "{{").replace("}", "}}") if isinstance(user_goal, str) else user_goal
+        safe_requirement = requirement_doc.replace("{", "{{").replace("}", "}}") if isinstance(requirement_doc, str) else requirement_doc
+        safe_architecture = architecture_doc.replace("{", "{{").replace("}", "}}") if isinstance(architecture_doc, str) else architecture_doc
         prompt = REPORT_GENERATION_PROMPT.format(
-            analysis=chunk,
-            user_goal=user_goal,
-            requirement_doc=requirement_doc,
-            architecture_doc=architecture_doc,
+            analysis=safe_chunk,
+            user_goal=safe_user_goal,
+            requirement_doc=safe_requirement,
+            architecture_doc=safe_architecture,
         )
         result = _run_task(prompt, context=context)
         chunk_outputs.append(result)

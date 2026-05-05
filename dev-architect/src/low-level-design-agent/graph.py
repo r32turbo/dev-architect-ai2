@@ -71,9 +71,15 @@ def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerati
 
     # Format the prompt
     current_date = get_current_date()
+    research_topic = get_research_topic(state["messages"])
+    safe_research_topic = (
+        research_topic.replace("{", "{{").replace("}", "}}")
+        if isinstance(research_topic, str)
+        else research_topic
+    )
     formatted_prompt = query_writer_instructions.format(
         current_date=current_date,
-        research_topic=get_research_topic(state["messages"]),
+        research_topic=safe_research_topic,
         number_queries=state["initial_search_query_count"],
     )
     # Generate the search queries
@@ -106,9 +112,11 @@ def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
     """
     # Configure
     configurable = Configuration.from_runnable_config(config)
+    rq = state["search_query"]
+    safe_rq = rq.replace("{", "{{").replace("}", "}}") if isinstance(rq, str) else rq
     formatted_prompt = web_searcher_instructions.format(
         current_date=get_current_date(),
-        research_topic=state["search_query"],
+        research_topic=safe_rq,
     )
 
     # Uses the google genai client as the langchain client doesn't return grounding metadata
@@ -157,10 +165,18 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
 
     # Format the prompt
     current_date = get_current_date()
+    research_topic = get_research_topic(state["messages"])
+    safe_research_topic = (
+        research_topic.replace("{", "{{").replace("}", "}}")
+        if isinstance(research_topic, str)
+        else research_topic
+    )
+    summaries_joined = "\n\n---\n\n".join(state["web_research_result"]) if all(isinstance(s, str) for s in state["web_research_result"]) else "\n\n---\n\n".join(state["web_research_result"])
+    safe_summaries = summaries_joined.replace("{", "{{").replace("}", "}}") if isinstance(summaries_joined, str) else summaries_joined
     formatted_prompt = reflection_instructions.format(
         current_date=current_date,
-        research_topic=get_research_topic(state["messages"]),
-        summaries="\n\n---\n\n".join(state["web_research_result"]),
+        research_topic=safe_research_topic,
+        summaries=safe_summaries,
     )
     # init Reasoning Model
     llm = ChatGoogleGenerativeAI(
@@ -235,10 +251,18 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
 
     # Format the prompt
     current_date = get_current_date()
+    research_topic = get_research_topic(state["messages"])
+    safe_research_topic = (
+        research_topic.replace("{", "{{").replace("}", "}}")
+        if isinstance(research_topic, str)
+        else research_topic
+    )
+    summaries_joined = "\n---\n\n".join(state["web_research_result"]) if all(isinstance(s, str) for s in state["web_research_result"]) else "\n---\n\n".join(state["web_research_result"])
+    safe_summaries = summaries_joined.replace("{", "{{").replace("}", "}}") if isinstance(summaries_joined, str) else summaries_joined
     formatted_prompt = answer_instructions.format(
         current_date=current_date,
-        research_topic=get_research_topic(state["messages"]),
-        summaries="\n---\n\n".join(state["web_research_result"]),
+        research_topic=safe_research_topic,
+        summaries=safe_summaries,
     )
 
     # init Reasoning Model, default to Gemini 2.5 Flash

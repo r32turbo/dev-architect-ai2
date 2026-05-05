@@ -51,7 +51,9 @@ def build_graph():
     # ---------- Node ----------
     def generate_backend_lld(state: BackendLLDState):
         lld_input = state["lld_input"]
-        task = BACKEND_LLD_TASK.format(lld_input=lld_input)
+        # Escape literal braces in the input to avoid formatting errors
+        escaped_input = lld_input.replace("{", "{{").replace("}", "}}")
+        task = BACKEND_LLD_TASK.format(lld_input=escaped_input)
 
         react_agent = ReusableReActAgent(
             tools=[],
