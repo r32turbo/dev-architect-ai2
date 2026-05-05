@@ -16,7 +16,9 @@ import sys
 from pathlib import Path
 from typing import List
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -72,6 +74,16 @@ app = FastAPI(
     description="Generates and stores LLD documents using AI agents",
     version="1.0.0",
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.error("Request validation failed: %s %s", request.url.path, exc)
+    # Return structured JSON so clients (and logs) show the exact validation errors
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": exc.body},
+    )
 
 # Global agents
 frontend_agent = None

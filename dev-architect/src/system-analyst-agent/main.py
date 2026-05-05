@@ -34,8 +34,8 @@ llm = ChatVertexAI(
 requirement_doc = os.getenv("SYSTEM_ANALYST_REQUIREMENT_DOC", "")
 architecture_doc = os.getenv("SYSTEM_ANALYST_ARCHITECTURE_DOC", "")
 system_prompt = SYSTEM_ANALYST_PROMPT.format(
-    requirement_doc=requirement_doc,
-    architecture_doc=architecture_doc,
+    requirement_doc=(requirement_doc.replace("{", "{{").replace("}", "}}") if isinstance(requirement_doc, str) else requirement_doc),
+    architecture_doc=(architecture_doc.replace("{", "{{").replace("}", "}}") if isinstance(architecture_doc, str) else architecture_doc),
 )
 
 prompt_builder = (

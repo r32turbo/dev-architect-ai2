@@ -50,6 +50,11 @@ def build_backend_lld_prompt(lld_input: str) -> object:
     Build a PromptBuilder with lld_input embedded directly.
     This avoids the {task} placeholder substitution bug.
     """
+    # Escape any literal braces in the provided input so that
+    # PromptPart.render (which uses str.format_map) does not
+    # raise ValueError on unmatched '{' or '}' characters.
+    escaped_input = lld_input.replace("{", "{{").replace("}", "}}")
+
     return (
         PromptBuilder()
 
@@ -109,7 +114,7 @@ Avoid:
 
         # ── USER PROMPT (lld_input baked in) ───────────────────
         .add_user(
-            f"""
+            """
 # TASK
 
 Generate a **production-grade Backend Low-Level Design (LLD)** for the system described below.
@@ -199,7 +204,7 @@ For EACH endpoint include:
 Generate the full Backend LLD now.
 Be precise. Be practical. Be complete.
 Do NOT ask for clarification — use reasonable assumptions and state them.
-"""
+""".format(lld_input=escaped_input)
         )
     )
 
