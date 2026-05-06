@@ -15,7 +15,19 @@ from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
 
+<<<<<<< HEAD
 # ✅ REGISTER ADK PATHS EARLY (MUST BE BEFORE IMPORTING PROMPTS)
+=======
+from ..database.db import get_db, get_requirment_document, save_system_architecture_document
+
+# ✅ IMPORT STATE
+try:
+    from .state import ArchitectState
+except ImportError:
+    from state import ArchitectState
+
+# ✅ REGISTER ADK PATHS EARLY
+>>>>>>> 1a959f420456e51010b04b7ddcbcb43d3b28eb36
 ADK_ROOT = Path(__file__).resolve().parents[1] / "agent-adk"
 if str(ADK_ROOT) not in sys.path:
     sys.path.insert(0, str(ADK_ROOT))
@@ -214,9 +226,13 @@ def normalize_output(text: str) -> str:
     return str(text or "").strip()
 
 # ---------------- MAIN EXECUTION ----------------
+
 def run_system_architect(
+<<<<<<< HEAD
     user_input: str | None = None,
     requirement_doc: str | None = None,
+=======
+>>>>>>> 1a959f420456e51010b04b7ddcbcb43d3b28eb36
     context: "AgentContext | None" = None,
 ) -> str:
     """
@@ -236,6 +252,7 @@ def run_system_architect(
 
     agent = build_agent(context)
 
+<<<<<<< HEAD
     # ✅ FETCH FROM CONTEXT IF NOT PROVIDED
     if context and hasattr(context, 'state') and context.state:
         if not user_input and 'user_input' in context.state:
@@ -254,22 +271,50 @@ def run_system_architect(
     # Set default for requirement_doc if not provided
     if not str(requirement_doc or "").strip():
         requirement_doc = ""
+=======
+    # Get input documents from context.state
+    requirement_document = context.state.get("requirement_document") if context else None
+    user_input = context.state.get("user_input") if context else None
+
+    if not requirement_document:
+        # try to retrieve the requirment document from the database
+        db = get_db()
+        doc = get_requirment_document(db, doc_id=int(context.session.metadata.get("requirement_doc", 0)))
+        if doc:
+            requirement_document = doc.requirment_document
+            logger.info("Fetched requirement document from DB for architecture generation. ID=%d", doc.id)
+        else:
+            # Raise error if no input document is found
+            raise ValueError("No requirment document found in context or database for architecture generation")
+>>>>>>> 1a959f420456e51010b04b7ddcbcb43d3b28eb36
 
     if context and callable(getattr(context, "record", None)):
         context.record(
             agent_name="system_architect_agent",
             event="started",
+<<<<<<< HEAD
             detail=f"user_input: {str(user_input)[:150]}, requirement_doc: {str(requirement_doc)[:150]}",
         )
 
     # 🔥 CHUNKING: If user_input is too long, process in chunks
     chunks = chunk_text(user_input)
     
+=======
+            detail=str(requirement_document)[:150],
+        )
+
+    # 🔥 CHUNKING: If input is too long, process in chunks
+    chunks = chunk_text(requirement_document, chunk_size=32000, overlap=500)
+>>>>>>> 1a959f420456e51010b04b7ddcbcb43d3b28eb36
     if len(chunks) == 1:
         # Single chunk, process as before
         result = agent.run(
             user_input=user_input,
+<<<<<<< HEAD
             requirement_doc=requirement_doc,
+=======
+            requirement_document=requirement_document,
+>>>>>>> 1a959f420456e51010b04b7ddcbcb43d3b28eb36
             context=context if context else None
         )
         output = normalize_output(
@@ -289,11 +334,16 @@ def run_system_architect(
                 result.output if hasattr(result, "output") else result
             ))
         output = "\n\n".join(outputs)
+    # Save output to database
+    db = get_db()
+    doc = save_system_architecture_document(
+        db=db,
+        architecture_document=output,
+        session_id=context.session.id if context else ""
+    )
 
     # ✅ SAVE OUTPUT TO STATE ALSO
-    state = ArchitectState()
-    state.set_output(output)
-
+    context.state.set_output(output)
     if context and callable(getattr(context, "set_state", None)):
         context.set_state("system_architect.output", output)
 
@@ -303,7 +353,7 @@ def run_system_architect(
             event="completed"
         )
 
-    return output
+    return doc
 
 # ---------------- MAIN ----------------
 def main():
