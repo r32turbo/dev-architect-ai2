@@ -10,6 +10,7 @@ import threading
 import textwrap
 import types
 import warnings
+import time
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
@@ -41,12 +42,18 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKSPACE_ROOT = REPO_ROOT.parent
 ADK_ROOT = SRC_DIR / "agent-adk"
-SYSTEM_ANALYST_DIR = SRC_DIR / "system-analyst-agent"
-SYSTEM_ANALYST_PROMPT_PATH = SYSTEM_ANALYST_DIR / "prompt.py"
+SYSTEM_ANALYST_DIR = SRC_DIR / "system_analyst_agent"
+SYSTEM_ANALYST_PROMPT_PATH = SYSTEM_ANALYST_DIR / "prompts.py"
 SYSTEM_ARCHITECT_DIR = SRC_DIR / "system_architect_agent"
 FRONTEND_LLD_DIR = SRC_DIR / "frontend-lld-agent"
 LLD_BACKEND_DIR = SRC_DIR / "lld_backend_agent"
 GENERIC_LLD_DIR = SRC_DIR / "generic-lld-agent"
+
+_CACHED_SYSTEM_ANALYST_ENTRY_PATH: Path | None = None
+_CACHED_SYSTEM_ARCHITECT_ENTRY_PATH: Path | None = None
+_CACHED_FRONTEND_LLD_ENTRY_PATH: Path | None = None
+_CACHED_LLD_BACKEND_ENTRY_PATH: Path | None = None
+_CACHED_GENERIC_LLD_ENTRY_PATH: Path | None = None
 
 # Hide known ChatVertexAI deprecation warnings from terminal output.
 warnings.filterwarnings(
@@ -284,11 +291,16 @@ def _print_chunked_output(text: str) -> None:
 
 
 def _resolve_system_analyst_entry_path() -> Path:
+    global _CACHED_SYSTEM_ANALYST_ENTRY_PATH
+    if _CACHED_SYSTEM_ANALYST_ENTRY_PATH is not None:
+        return _CACHED_SYSTEM_ANALYST_ENTRY_PATH
     preferred = SYSTEM_ANALYST_DIR / "analyst_agent.py"
     legacy = SYSTEM_ANALYST_DIR / "main.py"
     if preferred.is_file():
+        _CACHED_SYSTEM_ANALYST_ENTRY_PATH = preferred
         return preferred
     if legacy.is_file():
+        _CACHED_SYSTEM_ANALYST_ENTRY_PATH = legacy
         return legacy
     raise FileNotFoundError(
         f"System analyst entry file not found. Expected one of: {preferred}, {legacy}"
@@ -296,29 +308,45 @@ def _resolve_system_analyst_entry_path() -> Path:
 
 
 def _resolve_system_architect_entry_path() -> Path:
+    global _CACHED_SYSTEM_ARCHITECT_ENTRY_PATH
+    if _CACHED_SYSTEM_ARCHITECT_ENTRY_PATH is not None:
+        return _CACHED_SYSTEM_ARCHITECT_ENTRY_PATH
     preferred = SYSTEM_ARCHITECT_DIR / "sysaapp.py"
     if preferred.is_file():
+        _CACHED_SYSTEM_ARCHITECT_ENTRY_PATH = preferred
         return preferred
     raise FileNotFoundError(f"System architect entry file not found. Expected: {preferred}")
 
 
 def _resolve_frontend_lld_entry_path() -> Path:
+    global _CACHED_FRONTEND_LLD_ENTRY_PATH
+    if _CACHED_FRONTEND_LLD_ENTRY_PATH is not None:
+        return _CACHED_FRONTEND_LLD_ENTRY_PATH
     preferred = FRONTEND_LLD_DIR / "frontend_graph.py"
     if preferred.is_file():
+        _CACHED_FRONTEND_LLD_ENTRY_PATH = preferred
         return preferred
     raise FileNotFoundError(f"Frontend LLD entry file not found. Expected: {preferred}")
 
 
 def _resolve_lld_backend_entry_path() -> Path:
+    global _CACHED_LLD_BACKEND_ENTRY_PATH
+    if _CACHED_LLD_BACKEND_ENTRY_PATH is not None:
+        return _CACHED_LLD_BACKEND_ENTRY_PATH
     preferred = LLD_BACKEND_DIR / "lldbapp.py"
     if preferred.is_file():
+        _CACHED_LLD_BACKEND_ENTRY_PATH = preferred
         return preferred
     raise FileNotFoundError(f"Backend LLD entry file not found. Expected: {preferred}")
 
 
 def _resolve_generic_lld_entry_path() -> Path:
+    global _CACHED_GENERIC_LLD_ENTRY_PATH
+    if _CACHED_GENERIC_LLD_ENTRY_PATH is not None:
+        return _CACHED_GENERIC_LLD_ENTRY_PATH
     preferred = GENERIC_LLD_DIR / "generic_graph.py"
     if preferred.is_file():
+        _CACHED_GENERIC_LLD_ENTRY_PATH = preferred
         return preferred
     raise FileNotFoundError(f"Generic LLD entry file not found. Expected: {preferred}")
 
@@ -437,6 +465,20 @@ def _load_module(module_name: str, file_path: Path) -> ModuleType:
     return module
 
 
+def _warmup_worker(worker: Any, module_loader: Any, module_name: str, file_path: Path) -> None:
+    try:
+        module = module_loader(module_name, file_path)
+        if hasattr(module, "load_environment"):
+            module.load_environment()
+        build_agent = getattr(module, "build_agent", None)
+        if callable(build_agent):
+            worker._module = module
+            worker._agent = build_agent()
+            logger.info("Prewarmed %s", module_name)
+    except Exception as exc:
+        logger.warning("Failed to prewarm %s: %s", module_name, exc)
+
+
 def _load_adk_components():
     _ensure_reusableagents_package()
 
@@ -469,22 +511,24 @@ class SystemAnalystWorker:
         self._agent_response_type = agent_response_type
         self._agent = None
 
-    def run(self, task: str, context: "AgentContext | None" = None):
-        # Avoid long MLflow retries (localhost:5000) during supervisor runs.
-        # Preserve any prior setting after the analyst call so standalone
-        # usage can still opt back into observability.
-        previous_observability = os.environ.get("SYSTEM_ANALYST_OBSERVABILITY_ENABLED")
-        os.environ["SYSTEM_ANALYST_OBSERVABILITY_ENABLED"] = "0"
+    def run(
+        self,
+        task: str | None = None,
+        context: "AgentContext | None" = None,
+        user_input: str | None = None,
+    ):
+        resolved_user_input = str(user_input if user_input is not None else task or "").strip()
         if context is not None and callable(getattr(context, "record", None)):
             context.record(
                 agent_name="system_analyst_worker",
                 event="started",
-                detail=str(task)[:160],
+                detail=resolved_user_input[:160],
             )
         try:
             if self._agent is None:
                 prompt_module = _load_module("system_analyst_prompt", SYSTEM_ANALYST_PROMPT_PATH)
                 sys.modules["prompt"] = prompt_module
+                sys.modules["prompts"] = prompt_module
 
                 analyst_module = _load_module(
                     "system_analyst_main", _resolve_system_analyst_entry_path()
@@ -498,15 +542,15 @@ class SystemAnalystWorker:
             run_in_module = getattr(getattr(self, "_module", None), "run_system_analysis", None)
             if callable(run_in_module):
                 if context is not None and callable(getattr(context, "set_state", None)):
-                    context.set_state("user_goal", str(task).strip())
+                    context.set_state("user_goal", resolved_user_input)
                 try:
                     output = run_in_module(context=context)
                 except TypeError as exc:
                     if "required positional argument" not in str(exc):
                         raise
-                    output = run_in_module(user_goal=task, context=context)
+                    output = run_in_module(user_goal=resolved_user_input, context=context)
             else:
-                goal = str(task).strip()
+                goal = resolved_user_input
                 if isinstance(getattr(context, "state", None), dict):
                     goal = str(context.state.get("user_goal", goal)).strip() or goal
                 run_kwargs = {"user_goal": goal}
@@ -514,7 +558,7 @@ class SystemAnalystWorker:
                     run_kwargs["context"] = context
                 result = self._agent.run(**run_kwargs)
                 output = result.output if hasattr(result, "output") else str(result)
-            requirement_doc_id = _save_requirement_output(task, output, context)
+            requirement_doc_id = _save_requirement_output(resolved_user_input, output, context)
             _store_agent_chunks("system_analyst", str(output).strip(), context)
             if context is not None and callable(getattr(context, "set_state", None)):
                 context.set_state("requirement_doc", str(output).strip())
@@ -522,13 +566,10 @@ class SystemAnalystWorker:
                 if requirement_doc_id is not None:
                     context.set_state("system_requirement.document_id", requirement_doc_id)
                 context.record(agent_name="system_analyst_worker", event="completed")
-            return self._agent_response_type(output=str(output).strip())
+                return self._agent_response_type(output=str(output).strip())
         finally:
-            if previous_observability is None:
-                os.environ.pop("SYSTEM_ANALYST_OBSERVABILITY_ENABLED", None)
-            else:
-                os.environ["SYSTEM_ANALYST_OBSERVABILITY_ENABLED"] = previous_observability
-
+            # compatibility no-op: previous observability cleanup removed
+            pass
 
 class LLDWorker:
     def __init__(self, agent_response_type: Any) -> None:
@@ -1507,16 +1548,26 @@ def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> Non
         *args: Any,
         timeout_seconds: int | None = None,
     ) -> None:
-        effective_timeout = timeout_seconds if timeout_seconds is not None else stage_timeout_seconds
-        completed, result = _run_with_timeout(func, effective_timeout, *args, context=context)
-        if completed and not isinstance(result, Exception):
-            return
-        message = f"[{stage_name} timed out after {effective_timeout}s]"
-        if isinstance(result, Exception):
-            message = f"[{stage_name} failed: {result}]"
-        if callable(getattr(context, "set_state", None)):
-            context.set_state(state_key, message)
-            _store_agent_chunks(state_key.replace(".output", ""), message, context)
+            effective_timeout = timeout_seconds if timeout_seconds is not None else stage_timeout_seconds
+            start_ts = time.time()
+            logger.info("Starting supervisor stage: %s (timeout=%ss)", stage_name, effective_timeout)
+            completed, result = _run_with_timeout(func, effective_timeout, *args, context=context)
+            elapsed = time.time() - start_ts
+            if completed and not isinstance(result, Exception):
+                logger.info("Completed supervisor stage: %s in %.3fs", stage_name, elapsed)
+                return
+
+            # Stage timed out or failed
+            message = f"[{stage_name} timed out after {effective_timeout}s]"
+            if isinstance(result, Exception):
+                message = f"[{stage_name} failed: {result}]"
+                logger.warning("Supervisor stage %s failed after %.3fs: %s", stage_name, elapsed, result)
+            else:
+                logger.warning("Supervisor stage %s timed out after %.3fs (limit %ss)", stage_name, elapsed, effective_timeout)
+
+            if callable(getattr(context, "set_state", None)):
+                context.set_state(state_key, message)
+                _store_agent_chunks(state_key.replace(".output", ""), message, context)
 
     if _missing("system_analyst.output"):
         _run_stage(SystemAnalystWorker(AgentResponse).run, "system_analyst", "system_analyst.output", user_goal)
@@ -1582,6 +1633,46 @@ def build_supervisor_agent():
     lld_worker = LLDWorker(AgentResponse)
     backend_lld_worker = BackendLLDWorker(AgentResponse)
     generic_lld_worker = GenericLLDWorker(AgentResponse)
+
+    # Warm up workers once so request-time execution reuses preloaded modules and agents.
+    try:
+        prompt_module = _load_module("system_analyst_prompt", SYSTEM_ANALYST_PROMPT_PATH)
+        sys.modules["prompt"] = prompt_module
+        sys.modules["prompts"] = prompt_module
+        analyst_module = _load_module("system_analyst_main", _resolve_system_analyst_entry_path())
+        if hasattr(analyst_module, "load_environment"):
+            analyst_module.load_environment()
+        system_worker._module = analyst_module
+        system_worker._agent = analyst_module.build_agent()
+        logger.info("Prewarmed system_analyst worker")
+    except Exception as exc:
+        logger.warning("Failed to prewarm system_analyst worker: %s", exc)
+
+    try:
+        architect_module = __import__(
+            "system_architect_agent.sysaapp",
+            fromlist=["run_system_architect"],
+        )
+        if hasattr(architect_module, "load_environment"):
+            architect_module.load_environment()
+        system_architect_worker._module = architect_module
+        logger.info("Prewarmed system_architect worker")
+    except Exception as exc:
+        logger.warning("Failed to prewarm system_architect worker: %s", exc)
+
+    _warmup_worker(
+        frontend_lld_worker,
+        _load_module,
+        "frontend_lld_main",
+        _resolve_frontend_lld_entry_path(),
+    )
+
+    _warmup_worker(
+        generic_lld_worker,
+        _load_module,
+        "generic_lld_main",
+        _resolve_generic_lld_entry_path(),
+    )
 
     prompt_builder = (
         PromptBuilder()
@@ -1670,9 +1761,9 @@ def main() -> None:
     _load_environment()
     logger.info("Starting supervisor pipeline")
     supervisor = build_supervisor_agent()
-    pipeline_timeout_seconds = int(os.getenv("SUPERVISOR_PIPELINE_TIMEOUT_SECONDS", "900"))
-    if pipeline_timeout_seconds < 300:
-        pipeline_timeout_seconds = 300
+    pipeline_timeout_seconds = int(os.getenv("SUPERVISOR_PIPELINE_TIMEOUT_SECONDS", "180"))
+    if pipeline_timeout_seconds < 180:
+        pipeline_timeout_seconds = 180
 
     user_goal = (
         " ".join(sys.argv[1:]).strip()

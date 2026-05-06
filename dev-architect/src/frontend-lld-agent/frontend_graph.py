@@ -1,10 +1,10 @@
 """
 frontend_graph.py
 Builds and returns the ReusableReActAgent for the Frontend LLD Agent.
-Includes MLflow observability — structured logging + native MLflow tracing.
 """
 import importlib
 import importlib.util
+import logging
 import sys
 from pathlib import Path
 
@@ -17,10 +17,7 @@ _SRC_DIR = str(Path(__file__).resolve().parents[1])
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-# ── Observability ─────────────────────────────────────────────────────────────
-from observability.observability import get_logger, trace_agent
-
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def _import_from_agent(module_name: str):
@@ -94,9 +91,8 @@ def build_agent():
     return agent
 
 
-@trace_agent("frontend_lld")
 def run_agent(agent, context, user_input, requirement_doc, architecture_doc):
-    """Run the Frontend LLD agent with MLflow tracing."""
+    """Run the Frontend LLD agent."""
     logger.info("Running Frontend LLD Agent. session_id=%s", context.session.session_id)
     response = agent.run(
         context=context,

@@ -34,60 +34,78 @@ sys.path.insert(0, str(BASE_DIR / "generic-lld-agent"))
 sys.path.insert(0, str(BASE_DIR / "lld_backend_agent"))
 sys.path.insert(0, str(BASE_DIR / "database"))
 sys.path.insert(0, str(BASE_DIR / "supervisor-agent"))
-sys.path.insert(0, str(BASE_DIR / "system-analyst-agent"))
+sys.path.insert(0, str(BASE_DIR / "system_analyst_agent"))
 sys.path.insert(0, str(BASE_DIR / "low-level-design-agent"))
 sys.path.insert(0, str(BASE_DIR))
+# Ensure the agent ADK is importable for reusableagents.context
+ADK_ROOT = BASE_DIR / "agent-adk"
+if str(ADK_ROOT) not in sys.path:
+    sys.path.insert(0, str(ADK_ROOT))
+
+# Dynamic loader helper to import modules by file path (avoids relying on
+# hyphenated folder names or sys.path heuristics during static analysis).
+import importlib.util
+
+def _load_module_from_path(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, str(path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[attr-defined]
+    return module
 
 # System Architecture Agent
 # ✅ FIX: import run_system_architect directly — same pattern as backend
 from system_architect_agent import run_system_architect, create_context as create_architecture_context
 
 # Frontend Agent
-from frontend_graph import build_agent as build_frontend_agent
-from frontend_graph import create_context as create_frontend_context
-from frontend_graph import run_agent as run_frontend_agent
+# Frontend Agent (loaded by file path)
+_frontend_mod = _load_module_from_path(BASE_DIR / "frontend-lld-agent" / "frontend_graph.py", "frontend_graph")
+build_frontend_agent = getattr(_frontend_mod, "build_agent")
+create_frontend_context = getattr(_frontend_mod, "create_context")
+run_frontend_agent = getattr(_frontend_mod, "run_agent")
 
-# Generic Agent
-from generic_graph import build_agent as build_generic_agent
-from generic_graph import create_context as create_generic_context
-from generic_graph import run_agent as run_generic_agent
+# Generic Agent (loaded by file path)
+_generic_mod = _load_module_from_path(BASE_DIR / "generic-lld-agent" / "generic_graph.py", "generic_graph")
+build_generic_agent = getattr(_generic_mod, "build_agent")
+create_generic_context = getattr(_generic_mod, "create_context")
+run_generic_agent = getattr(_generic_mod, "run_agent")
 
 # Backend LLD Agent
 from lld_backend_agent.lldback import run_backend_lld
 
-# Database Imports
-from db import (
-    init_db,
-    get_db,
-    save_lld_document,
-    get_lld_document,
-    get_all_lld_documents,
-    save_system_architecture_document,
-    get_system_architecture_document,
-    get_all_system_architecture_documents,
-    save_lld_backend_document,
-    get_lld_backend_document,
-    get_all_lld_backend_documents,
-    get_latest_system_architecture_document,
-    save_requirement_document,
-    get_requirement_document,
-    get_all_requirement_documents,
-)
-# ── Observability imports ─────────────────────────────────────────────────────
-from observability.observability import get_logger, init_observability, new_request_id
-import mlflow
-
-
+# Database Imports (loaded by file path)
+_db_mod = _load_module_from_path(BASE_DIR / "database" / "db.py", "db")
+init_db = getattr(_db_mod, "init_db")
+get_db = getattr(_db_mod, "get_db")
+save_lld_document = getattr(_db_mod, "save_lld_document")
+get_lld_document = getattr(_db_mod, "get_lld_document")
+get_all_lld_documents = getattr(_db_mod, "get_all_lld_documents")
+save_system_architecture_document = getattr(_db_mod, "save_system_architecture_document")
+get_system_architecture_document = getattr(_db_mod, "get_system_architecture_document")
+get_all_system_architecture_documents = getattr(_db_mod, "get_all_system_architecture_documents")
+save_lld_backend_document = getattr(_db_mod, "save_lld_backend_document")
+get_lld_backend_document = getattr(_db_mod, "get_lld_backend_document")
+get_all_lld_backend_documents = getattr(_db_mod, "get_all_lld_backend_documents")
+get_latest_system_architecture_document = getattr(_db_mod, "get_latest_system_architecture_document")
+save_requirement_document = getattr(_db_mod, "save_requirement_document")
+get_requirement_document = getattr(_db_mod, "get_requirement_document")
+get_all_requirement_documents = getattr(_db_mod, "get_all_requirement_documents")
 # Supervisor, System Analyst, Low-level Design agents
-from sup import (
-    build_supervisor_agent,
-    _canonicalize_combined_output,
-    _ensure_agent_outputs,
-    _populate_lld_fields_from_output,
-)
-from analyst_agent import build_agent as build_system_analyst_agent, run_system_analysis
-from lld_createagent import run_pipeline as run_lld_pipeline
-from reusableagents.context import AgentContext
+_sup_mod = _load_module_from_path(BASE_DIR / "supervisor-agent" / "sup.py", "sup")
+build_supervisor_agent = getattr(_sup_mod, "build_supervisor_agent")
+_canonicalize_combined_output = getattr(_sup_mod, "_canonicalize_combined_output")
+_ensure_agent_outputs = getattr(_sup_mod, "_ensure_agent_outputs")
+_populate_lld_fields_from_output = getattr(_sup_mod, "_populate_lld_fields_from_output")
+
+# System Analyst Agent (explicit import of implementation)
+from system_analyst_agent.analyst_agent import build_agent as build_system_analyst_agent, run_system_analysis
+
+# Low-level LLD pipeline
+_lld_mod = _load_module_from_path(BASE_DIR / "low-level-design-agent" / "lld_createagent.py", "lld_createagent")
+run_lld_pipeline = getattr(_lld_mod, "run_pipeline")
+
+# Agent ADK context
+import importlib
+AgentContext = importlib.import_module("reusableagents.context").AgentContext
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -131,9 +149,6 @@ def startup():
     global supervisor_agent, system_analyst_agent, lld_app
 
 
-    logger.info("Initialising observability ...")
-    init_observability()
-
     logger.info("Initializing database...")
     init_db()
 
@@ -163,13 +178,32 @@ class LLDRequest(BaseModel):
     user_input: str
     requirement_doc: str = ""
     architecture_doc: str = ""
+class AgentRequest(BaseModel):
+    user_input: str
+    requirement_doc: str = ""
+    requirement_doc_id: str = ""
+
+    architecture_doc: str = ""
+    architecture_doc_id: str = ""  
+class AgentResponse(BaseModel):
+    id: int
+    agent_type: str
+    user_input: str
+    output: str
+    output_doc_id: str = ""
+    session_id: str
+    created_at: str
 
 
 class SupervisorRequest(BaseModel):
     user_input: str
 
 
-class LLDDocumentResponse(BaseModel):
+class SystemAnalystRequest(BaseModel):
+    user_input: str
+
+
+class AgentResponse(BaseModel):
     id: int
     agent_type: str
     user_input: str
@@ -177,9 +211,25 @@ class LLDDocumentResponse(BaseModel):
     session_id: str
     created_at: str
 
+
     class Config:
         from_attributes = True
 
+# Models for System Architecture generation
+
+class ArchitectureRequest(BaseModel):
+    user_input: str
+    requirement_doc_id: str = ""
+    requirement_doc: str = ""
+
+
+class ArchitectureResponse(BaseModel):
+    id: int
+    agent_type: str
+    user_input: str
+    output: str
+    session_id: str
+    created_at: str
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
@@ -193,7 +243,7 @@ def health_check():
 
 @app.post(
     "/generate/frontend-lld",
-    response_model=LLDDocumentResponse
+    response_model=AgentResponse
 )
 def generate_frontend_lld(
     request: LLDRequest,
@@ -202,7 +252,7 @@ def generate_frontend_lld(
     """
     Generate Frontend LLD and save to database.
     """
-    request_id = new_request_id()
+    request_id = str(uuid.uuid4())
     try:
         logger.info(
             "Received frontend LLD request: %s",
@@ -218,23 +268,13 @@ def generate_frontend_lld(
             },
         )
 
-        with mlflow.start_run(run_name="frontend_lld"):
-            mlflow.set_tag("agent_type",  "frontend_lld")
-            mlflow.set_tag("request_id",  request_id)
-            mlflow.set_tag("user_input",  request.user_input[:200])
-
-            response = run_frontend_agent(
-                agent=frontend_agent,
-                context=ctx,
-                user_input=request.user_input,
-                requirement_doc=request.requirement_doc,
-                architecture_doc=request.architecture_doc,
-            )
-
-            mlflow.log_metric("validation_score",    response.validation_score or 0)
-            mlflow.log_metric("was_refined",         int(response.was_refined))
-            mlflow.log_metric("refinement_attempts", response.refinement_attempts)
-            mlflow.log_metric("output_length",       len(response.output))
+        response = run_frontend_agent(
+            agent=frontend_agent,
+            context=ctx,
+            user_input=request.user_input,
+            requirement_doc=request.requirement_doc,
+            architecture_doc=request.architecture_doc,
+        )
 
         doc = save_lld_document(
             db=db,
@@ -246,7 +286,7 @@ def generate_frontend_lld(
             session_id=str(ctx.session.session_id),
         )
 
-        return LLDDocumentResponse(
+        return AgentResponse(
             id=doc.id,
             agent_type=doc.agent_type,
             user_input=doc.user_input,
@@ -265,7 +305,7 @@ def generate_frontend_lld(
 
 @app.post(
     "/generate/generic-lld",
-    response_model=LLDDocumentResponse
+    response_model=AgentResponse
 )
 def generate_generic_lld(
     request: LLDRequest,
@@ -274,7 +314,7 @@ def generate_generic_lld(
     """
     Generate Generic LLD and save to database.
     """
-    request_id = new_request_id()
+    request_id = str(uuid.uuid4())
     try:
         logger.info("Received generic LLD request. request_id=%s", request_id)
         logger.info(
@@ -291,23 +331,13 @@ def generate_generic_lld(
             },
         )
 
-        with mlflow.start_run(run_name="generic_lld"):
-            mlflow.set_tag("agent_type",  "generic_lld")
-            mlflow.set_tag("request_id",  request_id)
-            mlflow.set_tag("user_input",  request.user_input[:200])
-
-            response = run_generic_agent(
-                agent=generic_agent,
-                context=ctx,
-                user_input=request.user_input,
-                requirement_doc=request.requirement_doc,
-                architecture_doc=request.architecture_doc,
-            )
-
-            mlflow.log_metric("validation_score",    response.validation_score or 0)
-            mlflow.log_metric("was_refined",         int(response.was_refined))
-            mlflow.log_metric("refinement_attempts", response.refinement_attempts)
-            mlflow.log_metric("output_length",       len(response.output))
+        response = run_generic_agent(
+            agent=generic_agent,
+            context=ctx,
+            user_input=request.user_input,
+            requirement_doc=request.requirement_doc,
+            architecture_doc=request.architecture_doc,
+        )
 
         doc = save_lld_document(
             db=db,
@@ -319,7 +349,7 @@ def generate_generic_lld(
             session_id=str(ctx.session.session_id),
         )
 
-        return LLDDocumentResponse(
+        return AgentResponse(
             id=doc.id,
             agent_type=doc.agent_type,
             user_input=doc.user_input,
@@ -337,7 +367,7 @@ def generate_generic_lld(
 
 @app.post(
     "/generate/backend-lld",
-    response_model=LLDDocumentResponse
+    response_model=AgentResponse
 )
 def generate_backend_lld(
     request: LLDRequest,
@@ -368,7 +398,7 @@ def generate_backend_lld(
             session_id=session_id,
         )
 
-        return LLDDocumentResponse(
+        return AgentResponse(
             id=doc.id,
             agent_type="backend_lld",
             user_input=doc.user_input,
@@ -384,10 +414,10 @@ def generate_backend_lld(
 
 @app.post(
     "/generate/architecture",
-    response_model=LLDDocumentResponse
+    response_model=AgentResponse
 )
 def generate_architecture(
-    request: LLDRequest,
+    request: ArchitectureRequest,
     db: Session = Depends(get_db)
 ):
     try:
@@ -415,7 +445,7 @@ def generate_architecture(
             session_id=session_id,
         )
 
-        return LLDDocumentResponse(
+        return AgentResponse(
             id=doc.id,
             agent_type="system_architecture",
             user_input=request.user_input,
@@ -431,37 +461,33 @@ def generate_architecture(
 
 @app.post(
     "/generate/system-analyst",
-    response_model=LLDDocumentResponse,
+    response_model=AgentResponse,
 )
 def generate_system_analyst(
-    request: LLDRequest,
+    request: SystemAnalystRequest,
     db: Session = Depends(get_db),
 ):
     """
-    Run system analyst agent and save result.
+    Run system analyst agent and save result. Endpoint requires only `user_input`.
     """
     try:
         logger.info("Received system analyst request: %s", request.user_input)
 
-        ctx = AgentContext(state={
-            "user_goal": request.user_input,
-            "requirement_doc": request.requirement_doc,
-            "architecture_doc": request.architecture_doc,
-        })
+        ctx = AgentContext(state={"user_goal": request.user_input})
 
-        output = run_system_analysis(user_goal=request.user_input, context=ctx)
+        output = run_system_analysis(context=ctx)
 
         doc = save_lld_document(
             db=db,
             agent_type="system_analyst",
             user_input=request.user_input,
             output=output,
-            requirement_doc=request.requirement_doc,
-            architecture_doc=request.architecture_doc,
+            requirement_doc="",
+            architecture_doc="",
             session_id=str(ctx.session.session_id),
         )
 
-        return LLDDocumentResponse(
+        return AgentResponse(
             id=doc.id,
             agent_type=doc.agent_type,
             user_input=doc.user_input,
@@ -477,7 +503,7 @@ def generate_system_analyst(
 
 @app.post(
     "/generate/low-level-design",
-    response_model=LLDDocumentResponse,
+    response_model=AgentResponse,
 )
 def generate_low_level_design(
     request: LLDRequest,
@@ -512,7 +538,7 @@ def generate_low_level_design(
             session_id=str(ctx.session.session_id),
         )
 
-        return LLDDocumentResponse(
+        return AgentResponse(
             id=doc.id,
             agent_type=doc.agent_type,
             user_input=doc.user_input,
@@ -528,7 +554,7 @@ def generate_low_level_design(
 
 @app.post(
     "/generate/supervisor",
-    response_model=LLDDocumentResponse,
+    response_model=AgentResponse,
 )
 def generate_supervisor(
     request: SupervisorRequest,
@@ -570,7 +596,7 @@ def generate_supervisor(
             session_id=str(ctx.session.session_id),
         )
 
-        return LLDDocumentResponse(
+        return AgentResponse(
             id=doc.id,
             agent_type=doc.agent_type,
             user_input=doc.user_input,
@@ -584,136 +610,103 @@ def generate_supervisor(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+
 @app.get(
-    "/requirements",
-    response_model=List[LLDDocumentResponse],
+    "/documents",
+    response_model=List[AgentResponse]
 )
-def list_requirements(db: Session = Depends(get_db)):
-    docs = get_all_requirement_documents(db=db)
-    return [
-        LLDDocumentResponse(
+def get_all_documents(
+    db: Session = Depends(get_db)
+):
+    """Retrieve all documents across all agent types."""
+    docs = get_all_lld_documents(db=db)
+    arch_docs = get_all_system_architecture_documents(db=db)
+    backend_docs = get_all_lld_backend_documents(db=db)
+    
+    result = []
+    
+    # Add LLD documents
+    for doc in docs:
+        result.append(AgentResponse(
             id=doc.id,
-            agent_type="system_analyst",
+            agent_type=doc.agent_type,
             user_input=doc.user_input,
             output=doc.output,
             session_id=doc.session_id or "",
             created_at=str(doc.created_at),
-        )
-        for doc in docs
-    ]
-
-
-@app.get(
-    "/requirements/{doc_id}",
-    response_model=LLDDocumentResponse,
-)
-def get_requirement(doc_id: int, db: Session = Depends(get_db)):
-    doc = get_requirement_document(db=db, doc_id=doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail=f"Requirement document {doc_id} not found")
-    return LLDDocumentResponse(
-        id=doc.id,
-        agent_type="system_analyst",
-        user_input=doc.user_input,
-        output=doc.output,
-        session_id=doc.session_id or "",
-        created_at=str(doc.created_at),
-    )
-
-
-@app.get(
-    "/architectures",
-    response_model=List[LLDDocumentResponse],
-)
-def list_architectures(db: Session = Depends(get_db)):
-    docs = get_all_system_architecture_documents(db=db)
-    return [
-        LLDDocumentResponse(
+        ))
+    
+    # Add architecture documents
+    for doc in arch_docs:
+        result.append(AgentResponse(
             id=doc.id,
             agent_type="system_architecture",
             user_input=doc.analyst_document,
             output=doc.output,
             session_id=doc.session_id or "",
             created_at=str(doc.created_at),
-        )
-        for doc in docs
-    ]
-
-
-@app.get(
-    "/architectures/{doc_id}",
-    response_model=LLDDocumentResponse,
-)
-def get_architecture(doc_id: int, db: Session = Depends(get_db)):
-    doc = get_system_architecture_document(db=db, doc_id=doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail=f"Architecture document {doc_id} not found")
-    return LLDDocumentResponse(
-        id=doc.id,
-        agent_type="system_architecture",
-        user_input=doc.analyst_document,
-        output=doc.output,
-        session_id=doc.session_id or "",
-        created_at=str(doc.created_at),
-    )
-
-
-@app.get(
-    "/backend-lld-documents",
-    response_model=List[LLDDocumentResponse],
-)
-def list_backend_lld_documents(db: Session = Depends(get_db)):
-    docs = get_all_lld_backend_documents(db=db)
-    return [
-        LLDDocumentResponse(
+        ))
+    
+    # Add backend LLD documents
+    for doc in backend_docs:
+        result.append(AgentResponse(
             id=doc.id,
             agent_type="backend_lld",
             user_input=doc.user_input,
             output=doc.output,
             session_id=doc.session_id or "",
             created_at=str(doc.created_at),
-        )
-        for doc in docs
-    ]
+        ))
+    
+    return result
 
 
 @app.get(
-    "/backend-lld-documents/{doc_id}",
-    response_model=LLDDocumentResponse,
+    "/documents/agent/{agent_type}",
+    response_model=List[AgentResponse]
 )
-def get_backend_lld_document(doc_id: int, db: Session = Depends(get_db)):
-    doc = get_lld_backend_document(db=db, doc_id=doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail=f"Backend LLD document {doc_id} not found")
-    return LLDDocumentResponse(
-        id=doc.id,
-        agent_type="backend_lld",
-        user_input=doc.user_input,
-        output=doc.output,
-        session_id=doc.session_id or "",
-        created_at=str(doc.created_at),
-    )
-
-
-@app.get(
-    "/documents",
-    response_model=List[LLDDocumentResponse]
-)
-def list_documents(
-    agent_type: str = None,
+def get_documents_by_agent(
+    agent_type: str,
     db: Session = Depends(get_db)
 ):
-    """
-    Get all saved documents.
-    Optional filter by agent_type.
-    """
-    docs = get_all_lld_documents(
-        db=db,
-        agent_type=agent_type
-    )
+    """Retrieve all documents of a specific agent type."""
+    docs = []
+
+    if agent_type == "backend_lld":
+        docs = get_all_lld_backend_documents(db=db)
+        return [
+            AgentResponse(
+                id=doc.id,
+                agent_type="backend_lld",
+                user_input=doc.user_input,
+                output=doc.output,
+                session_id=doc.session_id or "",
+                created_at=str(doc.created_at),
+            )
+            for doc in docs
+        ]
+    elif agent_type == "system_architecture":
+        docs = get_all_system_architecture_documents(db=db)
+        return [
+            AgentResponse(
+                id=doc.id,
+                agent_type="system_architecture",
+                user_input=doc.analyst_document,
+                output=doc.output,
+                session_id=doc.session_id or "",
+                created_at=str(doc.created_at),
+            )
+            for doc in docs
+        ]
+    else:
+        docs = get_all_lld_documents(
+            db=db,
+            agent_type=agent_type
+        )
 
     return [
-        LLDDocumentResponse(
+        AgentResponse(
             id=doc.id,
             agent_type=doc.agent_type,
             user_input=doc.user_input,
@@ -726,20 +719,93 @@ def list_documents(
 
 
 @app.get(
-    "/documents/{doc_id}",
-    response_model=LLDDocumentResponse
+    "/documents/agent/{agent_type}/id/{doc_id}",
+    response_model=AgentResponse
 )
-def get_document(
+def get_document_by_agent_and_id(
+    agent_type: str,
     doc_id: int,
     db: Session = Depends(get_db)
 ):
-    """
-    Get single document by ID.
-    """
-    doc = get_lld_document(
-        db=db,
-        doc_id=doc_id
+    """Retrieve a specific document by agent type and document ID."""
+    # Query by agent_type and ID from the default LLD table
+    if agent_type in ["frontend_lld", "generic_lld", "system_analyst", "low_level_design", "supervisor"]:
+        doc = get_lld_document(db=db, doc_id=doc_id)
+        if doc and doc.agent_type == agent_type:
+            return AgentResponse(
+                id=doc.id,
+                agent_type=doc.agent_type,
+                user_input=doc.user_input,
+                output=doc.output,
+                session_id=doc.session_id or "",
+                created_at=str(doc.created_at),
+            )
+    elif agent_type == "system_architecture":
+        doc = get_system_architecture_document(db=db, doc_id=doc_id)
+        if doc:
+            return AgentResponse(
+                id=doc.id,
+                agent_type="system_architecture",
+                user_input=doc.analyst_document,
+                output=doc.output,
+                session_id=doc.session_id or "",
+                created_at=str(doc.created_at),
+            )
+    elif agent_type == "backend_lld":
+        doc = get_lld_backend_document(db=db, doc_id=doc_id)
+        if doc:
+            return AgentResponse(
+                id=doc.id,
+                agent_type="backend_lld",
+                user_input=doc.user_input,
+                output=doc.output,
+                session_id=doc.session_id or "",
+                created_at=str(doc.created_at),
+            )
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Document {doc_id} not found for agent type {agent_type}"
     )
+
+
+@app.get(
+    "/documents/{doc_id}",
+    response_model=AgentResponse
+)
+def get_document_by_id(
+    doc_id: int,
+    db: Session = Depends(get_db)
+):
+    """Retrieve a document by ID across all agent types."""
+    # Check architecture documents
+    doc = get_system_architecture_document(db=db, doc_id=doc_id)
+
+    if doc:
+        return AgentResponse(
+            id=doc.id,
+            agent_type="system_architecture",
+            user_input=doc.analyst_document,
+            output=doc.output,
+            session_id=doc.session_id or "",
+            created_at=str(doc.created_at),
+        )
+
+    # Check backend LLD documents
+    doc = get_lld_backend_document(db=db, doc_id=doc_id)
+
+    if doc:
+        return AgentResponse(
+            id=doc.id,
+            agent_type="backend_lld",
+            user_input=doc.user_input,
+            output=doc.output,
+            session_id=doc.session_id or "",
+            created_at=str(doc.created_at),
+        )
+
+    # Check default documents
+    doc = get_lld_document(db=db, doc_id=doc_id)
 
     if not doc:
         raise HTTPException(
@@ -747,7 +813,7 @@ def get_document(
             detail=f"Document {doc_id} not found"
         )
 
-    return LLDDocumentResponse(
+    return AgentResponse(
         id=doc.id,
         agent_type=doc.agent_type,
         user_input=doc.user_input,
