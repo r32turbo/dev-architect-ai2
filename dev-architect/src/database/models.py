@@ -97,3 +97,29 @@ class LLDDocument(Base):
             f"<LLDDocument id={self.id} agent_type={self.agent_type!r} "
             f"created_at={self.created_at}>"
         )
+
+
+class SystemRequirementDocument(Base):
+    """
+    Stores the output of the System Analyst Agent run (Requirement document).
+
+    Columns:
+      id           : auto-increment primary key
+      user_input   : the original user request
+      output       : the generated requirement document (full markdown)
+      session_id   : the AgentContext session ID
+      created_at   : timestamp of when the document was created
+    """
+    __tablename__ = "system_requirement_documents"
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    user_input     = Column(Text, nullable=False)
+    output         = Column(Text, nullable=False)
+    session_id     = Column(String(100), nullable=True)
+    created_at     = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return (
+            f"<SystemRequirementDocument id={self.id} "
+            f"created_at={self.created_at}>"
+        )

@@ -20,15 +20,23 @@ from functools import wraps
 
 # ── Suppress noisy warnings ───────────────────────────────────────────────────
 warnings.filterwarnings("ignore")
-logging.getLogger("mlflow").setLevel(logging.ERROR)
 
-# ── MLflow ────────────────────────────────────────────────────────────────────
-import mlflow
+# ── MLflow is optional for local development ────────────────────────────────
+try:
+    import mlflow  # type: ignore
+    _MLFLOW_AVAILABLE = True
+except ImportError:
+    mlflow = None  # type: ignore
+    _MLFLOW_AVAILABLE = False
+
+if _MLFLOW_AVAILABLE:
+    logging.getLogger("mlflow").setLevel(logging.ERROR)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MLFLOW_URI      = os.getenv("MLFLOW_TRACKING_URI",    "http://localhost:5000")
 EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "dev_architect_agent")
 SERVICE_NAME    = os.getenv("OTEL_SERVICE_NAME",       "dev-architect-agent")
+MLFLOW_ENABLED  = os.getenv("MLFLOW_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 _GCP_PROJECT  = os.getenv("GOOGLE_CLOUD_PROJECT",  "eds-alchemy")
 _GCP_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
@@ -113,6 +121,12 @@ def init_observability() -> None:
     Initialise MLflow tracking and auto-logging.
     Call once at application startup.
     """
+    if not _MLFLOW_AVAILABLE or not MLFLOW_ENABLED:
+        logging.getLogger(__name__).info(
+            "MLflow tracing is disabled; observability will run without tracing."
+        )
+        return
+
     # Connect to MLflow server
     mlflow.set_tracking_uri(MLFLOW_URI)
     mlflow.set_experiment(EXPERIMENT_NAME)
@@ -145,6 +159,9 @@ def trace_agent(agent_type: str):
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
+            if not _MLFLOW_AVAILABLE or not MLFLOW_ENABLED:
+                return fn(*args, **kwargs)
+
             with mlflow.start_span(name=f"{agent_type}.run") as span:
                 span.set_inputs({
                     "agent_type":  agent_type,

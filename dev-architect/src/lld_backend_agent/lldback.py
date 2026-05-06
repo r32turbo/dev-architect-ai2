@@ -8,6 +8,7 @@ import sys
 import types
 import importlib
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -92,16 +93,20 @@ def build_agent(prompt):
     validator_llm = create_validator_llm(gemini_config)
     validator     = OutputValidator(llm=validator_llm)
 
+    enable_validation = str(
+        os.getenv("BACKEND_LLD_ENABLE_VALIDATION", "false")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
     return ReusableReActAgent(
         tools=[],
         llm=agent_llm,
         prompt_builder=prompt,          # ✅ baked-in prompt passed here
         validator=validator,
         config=AgentConfig(
-            max_react_iterations=3,
-            enable_validation=True,
+            max_react_iterations=int(os.getenv("BACKEND_LLD_MAX_REACT_ITERATIONS", "2")),
+            enable_validation=enable_validation,
             validation_score_threshold=0.5,
-            max_refinement_attempts=1,
+            max_refinement_attempts=int(os.getenv("BACKEND_LLD_MAX_REFINEMENT_ATTEMPTS", "1")),
         ),
     )
 
@@ -143,6 +148,19 @@ Focus on static content, performance, SEO, and responsiveness.
 # ============================================================
 
 def chunk_text(text: str, chunk_size: int = 8000, overlap: int = 500) -> list[str]:
+    env_chunk_size = str(os.getenv("BACKEND_LLD_CHUNK_SIZE", "")).strip()
+    env_overlap = str(os.getenv("BACKEND_LLD_CHUNK_OVERLAP", "")).strip()
+    if env_chunk_size:
+        try:
+            chunk_size = max(2000, int(env_chunk_size))
+        except ValueError:
+            pass
+    if env_overlap:
+        try:
+            overlap = max(0, int(env_overlap))
+        except ValueError:
+            pass
+
     if len(text) <= chunk_size:
         return [text]
 

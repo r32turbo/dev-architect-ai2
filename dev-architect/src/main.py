@@ -36,10 +36,11 @@ sys.path.insert(0, str(BASE_DIR / "database"))
 sys.path.insert(0, str(BASE_DIR / "supervisor-agent"))
 sys.path.insert(0, str(BASE_DIR / "system-analyst-agent"))
 sys.path.insert(0, str(BASE_DIR / "low-level-design-agent"))
+sys.path.insert(0, str(BASE_DIR))
 
 # System Architecture Agent
 # ✅ FIX: import run_system_architect directly — same pattern as backend
-from system_architect_agent import run_system_architect
+from system_architect_agent import run_system_architect, create_context as create_architecture_context
 
 # Frontend Agent
 from frontend_graph import build_agent as build_frontend_agent
@@ -62,8 +63,15 @@ from db import (
     get_lld_document,
     get_all_lld_documents,
     save_system_architecture_document,
+    get_system_architecture_document,
+    get_all_system_architecture_documents,
     save_lld_backend_document,
+    get_lld_backend_document,
+    get_all_lld_backend_documents,
     get_latest_system_architecture_document,
+    save_requirement_document,
+    get_requirement_document,
+    get_all_requirement_documents,
 )
 # ── Observability imports ─────────────────────────────────────────────────────
 from observability.observability import get_logger, init_observability, new_request_id
@@ -155,6 +163,10 @@ class LLDRequest(BaseModel):
     user_input: str
     requirement_doc: str = ""
     architecture_doc: str = ""
+
+
+class SupervisorRequest(BaseModel):
+    user_input: str
 
 
 class LLDDocumentResponse(BaseModel):
@@ -381,19 +393,24 @@ def generate_architecture(
     try:
         logger.info("Received architecture request: %s", request.user_input)
 
-        # ✅ FIX: Call run_system_architect directly with input_document
-        # Combine user_input + requirement_doc if provided
-        input_document = request.user_input
-        if request.requirement_doc.strip():
-            input_document = f"{request.user_input}\n\n{request.requirement_doc}"
-
-        output = run_system_architect(input_document=input_document)
-
+        # ✅ FIX: Create context from request and pass separately
         session_id = str(uuid.uuid4())
+        context = create_architecture_context(
+            user_input=request.user_input,
+            requirement_doc=request.requirement_doc,
+            user_id="api-user",
+            session_metadata={"session_id": session_id}
+        )
+
+        output = run_system_architect(
+            user_input=request.user_input,
+            requirement_doc=request.requirement_doc,
+            context=context
+        )
 
         doc = save_system_architecture_document(
             db=db,
-            analyst_document=input_document,
+            analyst_document=request.user_input,
             output=output,
             session_id=session_id,
         )
@@ -401,7 +418,7 @@ def generate_architecture(
         return LLDDocumentResponse(
             id=doc.id,
             agent_type="system_architecture",
-            user_input=input_document,
+            user_input=request.user_input,
             output=doc.output,
             session_id=doc.session_id or "",
             created_at=str(doc.created_at),
@@ -514,7 +531,7 @@ def generate_low_level_design(
     response_model=LLDDocumentResponse,
 )
 def generate_supervisor(
-    request: LLDRequest,
+    request: SupervisorRequest,
     db: Session = Depends(get_db),
 ):
     """
@@ -528,8 +545,6 @@ def generate_supervisor(
 
         ctx = AgentContext(state={
             "user_goal": request.user_input,
-            "requirement_doc": request.requirement_doc,
-            "architecture_doc": request.architecture_doc,
         })
 
         response = supervisor_agent.run(task=request.user_input, context=ctx)
@@ -550,8 +565,8 @@ def generate_supervisor(
             agent_type="supervisor",
             user_input=request.user_input,
             output=str(output).strip(),
-            requirement_doc=request.requirement_doc,
-            architecture_doc=request.architecture_doc,
+            requirement_doc="",
+            architecture_doc="",
             session_id=str(ctx.session.session_id),
         )
 
@@ -567,6 +582,117 @@ def generate_supervisor(
     except Exception as e:
         logger.exception("Supervisor generation failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/requirements",
+    response_model=List[LLDDocumentResponse],
+)
+def list_requirements(db: Session = Depends(get_db)):
+    docs = get_all_requirement_documents(db=db)
+    return [
+        LLDDocumentResponse(
+            id=doc.id,
+            agent_type="system_analyst",
+            user_input=doc.user_input,
+            output=doc.output,
+            session_id=doc.session_id or "",
+            created_at=str(doc.created_at),
+        )
+        for doc in docs
+    ]
+
+
+@app.get(
+    "/requirements/{doc_id}",
+    response_model=LLDDocumentResponse,
+)
+def get_requirement(doc_id: int, db: Session = Depends(get_db)):
+    doc = get_requirement_document(db=db, doc_id=doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Requirement document {doc_id} not found")
+    return LLDDocumentResponse(
+        id=doc.id,
+        agent_type="system_analyst",
+        user_input=doc.user_input,
+        output=doc.output,
+        session_id=doc.session_id or "",
+        created_at=str(doc.created_at),
+    )
+
+
+@app.get(
+    "/architectures",
+    response_model=List[LLDDocumentResponse],
+)
+def list_architectures(db: Session = Depends(get_db)):
+    docs = get_all_system_architecture_documents(db=db)
+    return [
+        LLDDocumentResponse(
+            id=doc.id,
+            agent_type="system_architecture",
+            user_input=doc.analyst_document,
+            output=doc.output,
+            session_id=doc.session_id or "",
+            created_at=str(doc.created_at),
+        )
+        for doc in docs
+    ]
+
+
+@app.get(
+    "/architectures/{doc_id}",
+    response_model=LLDDocumentResponse,
+)
+def get_architecture(doc_id: int, db: Session = Depends(get_db)):
+    doc = get_system_architecture_document(db=db, doc_id=doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Architecture document {doc_id} not found")
+    return LLDDocumentResponse(
+        id=doc.id,
+        agent_type="system_architecture",
+        user_input=doc.analyst_document,
+        output=doc.output,
+        session_id=doc.session_id or "",
+        created_at=str(doc.created_at),
+    )
+
+
+@app.get(
+    "/backend-lld-documents",
+    response_model=List[LLDDocumentResponse],
+)
+def list_backend_lld_documents(db: Session = Depends(get_db)):
+    docs = get_all_lld_backend_documents(db=db)
+    return [
+        LLDDocumentResponse(
+            id=doc.id,
+            agent_type="backend_lld",
+            user_input=doc.user_input,
+            output=doc.output,
+            session_id=doc.session_id or "",
+            created_at=str(doc.created_at),
+        )
+        for doc in docs
+    ]
+
+
+@app.get(
+    "/backend-lld-documents/{doc_id}",
+    response_model=LLDDocumentResponse,
+)
+def get_backend_lld_document(doc_id: int, db: Session = Depends(get_db)):
+    doc = get_lld_backend_document(db=db, doc_id=doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Backend LLD document {doc_id} not found")
+    return LLDDocumentResponse(
+        id=doc.id,
+        agent_type="backend_lld",
+        user_input=doc.user_input,
+        output=doc.output,
+        session_id=doc.session_id or "",
+        created_at=str(doc.created_at),
+    )
 
 
 @app.get(

@@ -16,6 +16,23 @@ from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
 
+try:
+    from database.db import (
+        SessionLocal,
+        save_requirement_document,
+        save_system_architecture_document,
+        save_lld_document,
+        save_lld_backend_document,
+    )
+except ImportError:
+    from db import (  # type: ignore[reportMissingImports]
+        SessionLocal,
+        save_requirement_document,
+        save_system_architecture_document,
+        save_lld_document,
+        save_lld_backend_document,
+    )
+
 if TYPE_CHECKING:
     from reusableagents.context import AgentContext  # type: ignore[reportMissingImports]
 
@@ -51,6 +68,8 @@ except Exception:
 
 if str(ADK_ROOT) not in sys.path:
     sys.path.insert(0, str(ADK_ROOT))
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +154,104 @@ def _store_agent_chunks(agent_key: str, output: str, context: "AgentContext | No
     chunks = _chunk_text(str(output or ""), _resolve_chunk_size())
     context.set_state(f"{agent_key}.output_chunks", chunks)
     context.set_state(f"{agent_key}.output_chunk_count", len(chunks))
+
+
+def _context_session_id(context: "AgentContext | None") -> str:
+    session = getattr(context, "session", None)
+    return str(getattr(session, "session_id", "") or "")
+
+
+def _close_db(db: Any) -> None:
+    try:
+        db.close()
+    except Exception:
+        pass
+
+
+def _save_requirement_output(user_input: str, output: str, context: "AgentContext | None") -> int | None:
+    db = SessionLocal()
+    try:
+        doc = save_requirement_document(
+            db=db,
+            user_input=str(user_input or "").strip(),
+            output=str(output or "").strip(),
+            session_id=_context_session_id(context),
+        )
+        return doc.id
+    except Exception as exc:
+        logger.warning("Failed to save requirement output: %s", exc)
+        return None
+    finally:
+        _close_db(db)
+
+
+def _save_architecture_output(user_input: str, output: str, context: "AgentContext | None") -> int | None:
+    db = SessionLocal()
+    try:
+        doc = save_system_architecture_document(
+            db=db,
+            analyst_document=str(user_input or "").strip(),
+            output=str(output or "").strip(),
+            session_id=_context_session_id(context),
+        )
+        return doc.id
+    except Exception as exc:
+        logger.warning("Failed to save architecture output: %s", exc)
+        return None
+    finally:
+        _close_db(db)
+
+
+def _save_lld_output(
+    agent_type: str,
+    user_input: str,
+    output: str,
+    context: "AgentContext | None",
+    requirement_doc: str = "",
+    architecture_doc: str = "",
+) -> int | None:
+    db = SessionLocal()
+    try:
+        doc = save_lld_document(
+            db=db,
+            agent_type=agent_type,
+            user_input=str(user_input or "").strip(),
+            output=str(output or "").strip(),
+            requirement_doc=str(requirement_doc or "").strip(),
+            architecture_doc=str(architecture_doc or "").strip(),
+            session_id=_context_session_id(context),
+        )
+        return doc.id
+    except Exception as exc:
+        logger.warning("Failed to save %s output: %s", agent_type, exc)
+        return None
+    finally:
+        _close_db(db)
+
+
+def _save_backend_output(
+    user_input: str,
+    output: str,
+    context: "AgentContext | None",
+    requirement_doc: str = "",
+    architecture_doc_id: int | None = None,
+) -> int | None:
+    db = SessionLocal()
+    try:
+        doc = save_lld_backend_document(
+            db=db,
+            user_input=str(user_input or "").strip(),
+            output=str(output or "").strip(),
+            requirement_doc=str(requirement_doc or "").strip(),
+            architecture_doc_id=architecture_doc_id,
+            session_id=_context_session_id(context),
+        )
+        return doc.id
+    except Exception as exc:
+        logger.warning("Failed to save backend LLD output: %s", exc)
+        return None
+    finally:
+        _close_db(db)
 
 
 def _write_full_output(text: str) -> Path | None:
@@ -397,9 +514,13 @@ class SystemAnalystWorker:
                     run_kwargs["context"] = context
                 result = self._agent.run(**run_kwargs)
                 output = result.output if hasattr(result, "output") else str(result)
+            requirement_doc_id = _save_requirement_output(task, output, context)
             _store_agent_chunks("system_analyst", str(output).strip(), context)
             if context is not None and callable(getattr(context, "set_state", None)):
+                context.set_state("requirement_doc", str(output).strip())
                 context.set_state("system_analyst.output", str(output).strip())
+                if requirement_doc_id is not None:
+                    context.set_state("system_requirement.document_id", requirement_doc_id)
                 context.record(agent_name="system_analyst_worker", event="completed")
             return self._agent_response_type(output=str(output).strip())
         finally:
@@ -610,9 +731,18 @@ class SystemArchitectWorker:
             )
 
         if self._module is None:
-            self._module = _load_module(
-                "system_architect_main", _resolve_system_architect_entry_path()
-            )
+            try:
+                # Import as a package module first so relative imports in sysaapp.py
+                # resolve correctly and do not fall back to ADK prompts package.
+                self._module = __import__(
+                    "system_architect_agent.sysaapp",
+                    fromlist=["run_system_architect"],
+                )
+            except Exception:
+                self._module = _load_module(
+                    "system_architect_main", _resolve_system_architect_entry_path()
+                )
+
             if hasattr(self._module, "load_environment"):
                 self._module.load_environment()
 
@@ -620,10 +750,37 @@ class SystemArchitectWorker:
         if not callable(run_in_module):
             raise RuntimeError("System architect module does not expose run_system_architect")
 
-        output = str(run_in_module(input_document=task, context=context)).strip()
+        state = getattr(context, "state", None)
+        state = state if isinstance(state, dict) else {}
+
+        user_input = str(state.get("user_goal", "")).strip() or str(task).strip()
+        requirement_doc = (
+            str(state.get("requirement_doc", "")).strip()
+            or str(state.get("system_analyst.output", "")).strip()
+            or str(task).strip()
+        )
+
+        try:
+            output = str(
+                run_in_module(
+                    user_input=user_input,
+                    requirement_doc=requirement_doc,
+                    context=context,
+                )
+            ).strip()
+        except TypeError as exc:
+            # Backward-compatible fallback for older function signatures.
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            output = str(run_in_module(input_document=task, context=context)).strip()
+
+        architecture_doc_id = _save_architecture_output(task, output, context)
         _store_agent_chunks("system_architect", output, context)
         if context is not None and callable(getattr(context, "set_state", None)):
+            context.set_state("architecture_doc", output)
             context.set_state("system_architect.output", output)
+            if architecture_doc_id is not None:
+                context.set_state("system_architect.document_id", architecture_doc_id)
             context.record(agent_name="system_architect_worker", event="completed")
         return self._agent_response_type(output=output)
 
@@ -674,9 +831,20 @@ class FrontendLLDWorker:
         output = result.output if hasattr(result, "output") else str(result)
         output = str(output).strip()
 
+        frontend_doc_id = _save_lld_output(
+            "frontend_lld",
+            user_input,
+            output,
+            context,
+            requirement_doc=requirement_doc,
+            architecture_doc=architecture_doc,
+        )
+
         _store_agent_chunks("frontend_lld", output, context)
         if context is not None and callable(getattr(context, "set_state", None)):
             context.set_state("frontend_lld.output", output)
+            if frontend_doc_id is not None:
+                context.set_state("frontend_lld.document_id", frontend_doc_id)
             context.record(agent_name="frontend_lld_worker", event="completed")
         return self._agent_response_type(output=output)
 
@@ -782,6 +950,21 @@ class BackendLLDWorker:
                 raise RuntimeError("Backend LLD subprocess produced no output")
             payload = json.loads(stdout_lines[-1])
             output = str(payload.get("backend_output", "")).strip()
+            backend_architecture_doc_id = None
+            if isinstance(getattr(context, "state", None), dict):
+                raw_arch_id = context.state.get("system_architect.document_id")
+                if raw_arch_id is not None:
+                    try:
+                        backend_architecture_doc_id = int(raw_arch_id)
+                    except (TypeError, ValueError):
+                        backend_architecture_doc_id = None
+            backend_doc_id = _save_backend_output(
+                lld_input,
+                output,
+                context,
+                requirement_doc=str(getattr(context, "state", {}).get("requirement_doc", "")) if isinstance(getattr(context, "state", None), dict) else "",
+                architecture_doc_id=backend_architecture_doc_id,
+            )
         except subprocess.CalledProcessError as exc:
             stderr = (exc.stderr or "").strip()
             stdout = (exc.stdout or "").strip()
@@ -793,6 +976,8 @@ class BackendLLDWorker:
         _store_agent_chunks("backend_lld", output, context)
         if context is not None and callable(getattr(context, "set_state", None)):
             context.set_state("backend_lld.output", output)
+            if 'backend_doc_id' in locals() and backend_doc_id is not None:
+                context.set_state("backend_lld.document_id", backend_doc_id)
             context.record(agent_name="backend_lld_worker", event="completed")
         return self._agent_response_type(output=output)
 
@@ -912,9 +1097,19 @@ class GenericLLDWorker:
         except Exception as exc:
             output = f"Generic LLD execution failed: {exc}"
 
+        generic_doc_id = _save_lld_output(
+            "generic_lld",
+            task,
+            output,
+            context,
+            requirement_doc=str(state.get("requirement_doc", "")),
+            architecture_doc=str(state.get("architecture_doc", "")) or str(state.get("backend_lld.output", "")),
+        )
         _store_agent_chunks("generic_lld", output, context)
         if context is not None and callable(getattr(context, "set_state", None)):
             context.set_state("generic_lld.output", output)
+            if 'generic_doc_id' in locals() and generic_doc_id is not None:
+                context.set_state("generic_lld.document_id", generic_doc_id)
             context.record(agent_name="generic_lld_worker", event="completed")
         return self._agent_response_type(output=output)
 
@@ -1296,15 +1491,27 @@ def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> Non
     stage_timeout_seconds = int(os.getenv("SUPERVISOR_STAGE_TIMEOUT_SECONDS", "240"))
     if stage_timeout_seconds < 30:
         stage_timeout_seconds = 30
+    backend_stage_timeout_seconds = int(
+        os.getenv("SUPERVISOR_BACKEND_STAGE_TIMEOUT_SECONDS", str(max(stage_timeout_seconds, 420)))
+    )
+    if backend_stage_timeout_seconds < 30:
+        backend_stage_timeout_seconds = 30
 
     def _missing(key: str) -> bool:
         return not str(state.get(key, "")).strip()
 
-    def _run_stage(func: Any, stage_name: str, state_key: str, *args: Any) -> None:
-        completed, result = _run_with_timeout(func, stage_timeout_seconds, *args, context=context)
+    def _run_stage(
+        func: Any,
+        stage_name: str,
+        state_key: str,
+        *args: Any,
+        timeout_seconds: int | None = None,
+    ) -> None:
+        effective_timeout = timeout_seconds if timeout_seconds is not None else stage_timeout_seconds
+        completed, result = _run_with_timeout(func, effective_timeout, *args, context=context)
         if completed and not isinstance(result, Exception):
             return
-        message = f"[{stage_name} timed out after {stage_timeout_seconds}s]"
+        message = f"[{stage_name} timed out after {effective_timeout}s]"
         if isinstance(result, Exception):
             message = f"[{stage_name} failed: {result}]"
         if callable(getattr(context, "set_state", None)):
@@ -1344,6 +1551,7 @@ def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> Non
             "backend_lld_agent",
             "backend_lld.output",
             lld_output,
+            timeout_seconds=backend_stage_timeout_seconds,
         )
 
     backend_output = str(state.get("backend_lld.output", "")).strip() or lld_output

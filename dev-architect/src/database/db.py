@@ -9,7 +9,10 @@ from typing import Optional, List
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 
-from models import Base, LLDDocument, SystemArchitectureDocument, LLDBackendDocument
+try:
+    from .models import Base, LLDDocument, SystemArchitectureDocument, LLDBackendDocument, SystemRequirementDocument
+except ImportError:
+    from models import Base, LLDDocument, SystemArchitectureDocument, LLDBackendDocument, SystemRequirementDocument
 
 logger = logging.getLogger(__name__)
 
@@ -223,3 +226,55 @@ def get_lld_backend_documents_by_architecture(db: Session, architecture_doc_id: 
 def get_latest_lld_backend_document(db: Session) -> Optional[LLDBackendDocument]:
     """Retrieve the most recent Backend LLD document."""
     return db.query(LLDBackendDocument).order_by(LLDBackendDocument.created_at.desc()).first()
+
+
+# ── SYSTEM REQUIREMENT DOCUMENT CRUD HELPERS ─────────────────────────────────
+
+def save_requirement_document(
+    db: Session,
+    user_input: str,
+    output: str,
+    session_id: str = "",
+) -> SystemRequirementDocument:
+    """
+    Save a generated System Requirement document to the database.
+
+    Parameters
+    ----------
+    db             : SQLAlchemy session
+    user_input     : original user request
+    output         : generated requirement markdown content
+    session_id     : AgentContext session ID
+
+    Returns
+    -------
+    SystemRequirementDocument : the saved record
+    """
+    doc = SystemRequirementDocument(
+        user_input=user_input,
+        output=output,
+        session_id=session_id,
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    logger.info(
+        "Saved SystemRequirementDocument to database. ID=%d session_id=%s",
+        doc.id, session_id,
+    )
+    return doc
+
+
+def get_requirement_document(db: Session, doc_id: int) -> Optional[SystemRequirementDocument]:
+    """Retrieve a single Requirement document by ID."""
+    return db.query(SystemRequirementDocument).filter(SystemRequirementDocument.id == doc_id).first()
+
+
+def get_all_requirement_documents(db: Session) -> List[SystemRequirementDocument]:
+    """Retrieve all Requirement documents."""
+    return db.query(SystemRequirementDocument).order_by(SystemRequirementDocument.created_at.desc()).all()
+
+
+def get_latest_requirement_document(db: Session) -> Optional[SystemRequirementDocument]:
+    """Retrieve the most recent Requirement document."""
+    return db.query(SystemRequirementDocument).order_by(SystemRequirementDocument.created_at.desc()).first()
