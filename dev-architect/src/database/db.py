@@ -9,7 +9,7 @@ from typing import Optional, List
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 
-from models import Base, LLDDocument, SystemArchitectureDocument, LLDBackendDocument
+from models import Base, LLDDocument, SystemArchitectureDocument, LLDBackendDocument, SystemRequirementDocument
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,9 @@ def get_db() -> Session:
     finally:
         db.close()
 
+def get_requirment_document(db: Session, doc_id: int) -> Optional[SystemRequirementDocument]:
+    """Retrieve a single System Requirement document by ID."""
+    return db.query(SystemRequirementDocument).filter(SystemRequirementDocument.id == doc_id).first()
 
 # ── CRUD helpers ──────────────────────────────────────────────────────────────
 

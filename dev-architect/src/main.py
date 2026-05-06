@@ -382,11 +382,21 @@ def generate_architecture(
         logger.info("Received architecture request: %s", request.user_input)
 
         # ✅ FIX: Call run_system_architect directly with input_document
-        # Combine user_input + requirement_doc if provided
-        input_document = request.user_input
-        if request.requirement_doc.strip():
-            input_document = f"{request.user_input}\n\n{request.requirement_doc}"
+        # Retrieve the input from the request to start the agent
+        user_input = request.user_input
+        requirement_doc = request.requirement_doc.strip()
+        requirement_doc_id = request.requirement_doc_id.strip()
 
+        # Retrieve the document from the database if requirement_doc is empty and  requirement_doc_id is not empty
+        if not requirement_doc and requirement_doc_id:
+            from db import get_requirement_document
+            req_doc = get_requirement_document(db=db, doc_id=int(requirement_doc_id))
+            if req_doc:
+                requirement_doc = req_doc.content
+                logger.info("Fetched requirement document from DB for architecture generation: %s", requirement_doc_id)
+            else:
+                logger.warning("No requirement document found in DB for ID: %s", requirement_doc_id)
+    
         output = run_system_architect(input_document=input_document)
 
         session_id = str(uuid.uuid4())

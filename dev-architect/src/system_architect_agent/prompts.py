@@ -91,8 +91,12 @@ Provide step-by-step flow of how data moves through the system:
 
 
 USER_ARCHITECT_PROMPT = """
-Analyze the following System Analyst document and generate the System Architecture Report.
+Analyze the System Requirement document and generate the System Architecture Report.
 
-System Analyst Document:
-{input_document}
+The User requirment is as follows :
+{user_input}
+
+Following is the System Requirement Document:
+{requirement_document}
+
 """

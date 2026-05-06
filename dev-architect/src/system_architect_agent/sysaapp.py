@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
 
+from ..database.db import get_db, get_requirment_document
+
 # ✅ IMPORT STATE
 try:
     from .state import ArchitectState
@@ -289,35 +291,43 @@ def normalize_output(text: str) -> str:
     return str(text or "").strip()
 
 # ---------------- MAIN EXECUTION ----------------
+
 def run_system_architect(
-    input_document: str | None = None,
     context: "AgentContext | None" = None,
 ) -> str:
     load_environment()
 
     agent = build_agent(context)
 
-    # ✅ FETCH FROM STATE IF INPUT NOT PROVIDED
-    if not str(input_document or "").strip():
-        state = ArchitectState()
-        input_document = state.get_input()
+    # Get input documents from context.state
+    requirement_document = context.state.get("requirement_document") if context else None
+    user_input = context.state.get("user_input") if context else None
 
-    if not str(input_document or "").strip():
-        raise ValueError("input_document is required")
+    if not requirement_document:
+        # try to retrieve the requirment document from the database
+        db = get_db()
+        doc = get_requirment_document(db, doc_id=int(context.session.metadata.get("requirement_doc", 0)))
+        if doc:
+            requirement_document = doc.requirment_document
+            logger.info("Fetched requirement document from DB for architecture generation. ID=%d", doc.id)
+        else:
+            # Raise error if no input document is found
+            raise ValueError("No requirment document found in context or database for architecture generation")
 
     if context and callable(getattr(context, "record", None)):
         context.record(
             agent_name="system_architect_agent",
             event="started",
-            detail=str(input_document)[:150],
+            detail=str(requirement_document)[:150],
         )
 
     # 🔥 CHUNKING: If input is too long, process in chunks
-    chunks = chunk_text(input_document, chunk_size=8000, overlap=500)
+    chunks = chunk_text(requirement_document, chunk_size=32000, overlap=500)
     if len(chunks) == 1:
         # Single chunk, process as before
         result = agent.run(
-            input_document=input_document,
+            user_input=user_input,
+            requirement_document=requirement_document,
             context=context if context else None
         )
         output = normalize_output(
