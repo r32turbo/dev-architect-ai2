@@ -50,8 +50,7 @@ class SystemArchitectureDocument(Base):
     __tablename__ = "system_architecture_documents"
 
     id                = Column(Integer, primary_key=True, autoincrement=True)
-    analyst_document  = Column(Text, nullable=False)
-    output            = Column(Text, nullable=False)
+    architecture_document  = Column(Text, nullable=False)
     session_id        = Column(String(100), nullable=True)
     created_at        = Column(DateTime, default=datetime.utcnow, nullable=False)
 

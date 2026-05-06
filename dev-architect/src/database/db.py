@@ -115,8 +115,7 @@ def get_all_lld_documents(db: Session, agent_type: str = None) -> List[LLDDocume
 
 def save_system_architecture_document(
     db: Session,
-    analyst_document: str,
-    output: str,
+    architecture_document: str,
     session_id: str = "",
 ) -> SystemArchitectureDocument:
     """
@@ -125,8 +124,7 @@ def save_system_architecture_document(
     Parameters
     ----------
     db                 : SQLAlchemy session
-    analyst_document   : the analyst document that was input
-    output             : generated architecture markdown content
+    architecture_document : the architecture document (output)
     session_id         : AgentContext session ID
 
     Returns
@@ -134,8 +132,7 @@ def save_system_architecture_document(
     SystemArchitectureDocument : the saved record
     """
     doc = SystemArchitectureDocument(
-        analyst_document=analyst_document,
-        output=output,
+        architecture_document=architecture_document,
         session_id=session_id,
     )
     db.add(doc)
@@ -151,16 +148,6 @@ def save_system_architecture_document(
 def get_system_architecture_document(db: Session, doc_id: int) -> Optional[SystemArchitectureDocument]:
     """Retrieve a single System Architecture document by ID."""
     return db.query(SystemArchitectureDocument).filter(SystemArchitectureDocument.id == doc_id).first()
-
-
-def get_all_system_architecture_documents(db: Session) -> List[SystemArchitectureDocument]:
-    """Retrieve all System Architecture documents."""
-    return db.query(SystemArchitectureDocument).order_by(SystemArchitectureDocument.created_at.desc()).all()
-
-
-def get_latest_system_architecture_document(db: Session) -> Optional[SystemArchitectureDocument]:
-    """Retrieve the most recent System Architecture document."""
-    return db.query(SystemArchitectureDocument).order_by(SystemArchitectureDocument.created_at.desc()).first()
 
 
 # ── LLD BACKEND AGENT CRUD HELPERS ─────────────────────────────────────────────

@@ -168,6 +168,21 @@ class LLDDocumentResponse(BaseModel):
     class Config:
         from_attributes = True
 
+# Models for System Architecture generation
+
+class ArchitectureRequest(BaseModel):
+    user_input: str
+    requirement_doc_id: str = ""
+    requirement_doc: str = ""
+
+
+class ArchitectureResponse(BaseModel):
+    id: int
+    agent_type: str
+    user_input: str
+    output: str
+    session_id: str
+    created_at: str
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
@@ -372,10 +387,10 @@ def generate_backend_lld(
 
 @app.post(
     "/generate/architecture",
-    response_model=LLDDocumentResponse
+    response_model=ArchitectureResponse
 )
 def generate_architecture(
-    request: LLDRequest,
+    request: ArchitectureRequest,
     db: Session = Depends(get_db)
 ):
     try:
@@ -397,23 +412,28 @@ def generate_architecture(
             else:
                 logger.warning("No requirement document found in DB for ID: %s", requirement_doc_id)
     
-        output = run_system_architect(input_document=input_document)
+        # create the context for the system architect agent
+        context = AgentContext()
+        context.state["user_input"] = user_input
+        context.state["requirement_doc"] = requirement_doc
 
-        session_id = str(uuid.uuid4())
+        session_id = ""
+        # Check seesion_id in the context state else create a new one
+        if context.session and context.session.session_id:
+            session_id = context.session.session_id
+        else :
+            context.session.session_id = str(uuid.uuid4())
+            session_id = context.session.session_id
 
-        doc = save_system_architecture_document(
-            db=db,
-            analyst_document=input_document,
-            output=output,
-            session_id=session_id,
-        )
-
-        return LLDDocumentResponse(
+        # call the system architect agent to generate the architecture document with the context
+        doc = run_system_architect(context)
+        
+        return ArchitectureResponse(
             id=doc.id,
             agent_type="system_architecture",
-            user_input=input_document,
-            output=doc.output,
-            session_id=doc.session_id or "",
+            user_input=user_input,
+            output=doc.architecture_document,
+            session_id=session_id,
             created_at=str(doc.created_at),
         )
 

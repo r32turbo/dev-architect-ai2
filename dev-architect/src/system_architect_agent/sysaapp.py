@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
 
-from ..database.db import get_db, get_requirment_document
+from ..database.db import get_db, get_requirment_document, save_system_architecture_document
 
 # ✅ IMPORT STATE
 try:
@@ -345,11 +345,16 @@ def run_system_architect(
                 result.output if hasattr(result, "output") else result
             ))
         output = "\n\n".join(outputs)
+    # Save output to database
+    db = get_db()
+    doc = save_system_architecture_document(
+        db=db,
+        architecture_document=output,
+        session_id=context.session.id if context else ""
+    )
 
     # ✅ SAVE OUTPUT TO STATE ALSO
-    state = ArchitectState()
-    state.set_output(output)
-
+    context.state.set_output(output)
     if context and callable(getattr(context, "set_state", None)):
         context.set_state("system_architect.output", output)
 
@@ -359,7 +364,7 @@ def run_system_architect(
             event="completed"
         )
 
-    return output
+    return doc
 
 # ---------------- MAIN ----------------
 def main():
