@@ -9,14 +9,10 @@ from typing import Optional, List
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 
-<<<<<<< HEAD
 try:
     from .models import Base, LLDDocument, SystemArchitectureDocument, LLDBackendDocument, SystemRequirementDocument
 except ImportError:
     from models import Base, LLDDocument, SystemArchitectureDocument, LLDBackendDocument, SystemRequirementDocument
-=======
-from models import Base, LLDDocument, SystemArchitectureDocument, LLDBackendDocument, SystemRequirementDocument
->>>>>>> 1a959f420456e51010b04b7ddcbcb43d3b28eb36
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +45,6 @@ def get_db() -> Session:
     finally:
         db.close()
 
-def get_requirment_document(db: Session, doc_id: int) -> Optional[SystemRequirementDocument]:
-    """Retrieve a single System Requirement document by ID."""
-    return db.query(SystemRequirementDocument).filter(SystemRequirementDocument.id == doc_id).first()
 
 # ── CRUD helpers ──────────────────────────────────────────────────────────────
 
@@ -122,7 +115,8 @@ def get_all_lld_documents(db: Session, agent_type: str = None) -> List[LLDDocume
 
 def save_system_architecture_document(
     db: Session,
-    architecture_document: str,
+    analyst_document: str,
+    output: str,
     session_id: str = "",
 ) -> SystemArchitectureDocument:
     """
@@ -131,7 +125,8 @@ def save_system_architecture_document(
     Parameters
     ----------
     db                 : SQLAlchemy session
-    architecture_document : the architecture document (output)
+    analyst_document   : the analyst document that was input
+    output             : generated architecture markdown content
     session_id         : AgentContext session ID
 
     Returns
@@ -139,7 +134,8 @@ def save_system_architecture_document(
     SystemArchitectureDocument : the saved record
     """
     doc = SystemArchitectureDocument(
-        architecture_document=architecture_document,
+        analyst_document=analyst_document,
+        output=output,
         session_id=session_id,
     )
     db.add(doc)
@@ -155,6 +151,16 @@ def save_system_architecture_document(
 def get_system_architecture_document(db: Session, doc_id: int) -> Optional[SystemArchitectureDocument]:
     """Retrieve a single System Architecture document by ID."""
     return db.query(SystemArchitectureDocument).filter(SystemArchitectureDocument.id == doc_id).first()
+
+
+def get_all_system_architecture_documents(db: Session) -> List[SystemArchitectureDocument]:
+    """Retrieve all System Architecture documents."""
+    return db.query(SystemArchitectureDocument).order_by(SystemArchitectureDocument.created_at.desc()).all()
+
+
+def get_latest_system_architecture_document(db: Session) -> Optional[SystemArchitectureDocument]:
+    """Retrieve the most recent System Architecture document."""
+    return db.query(SystemArchitectureDocument).order_by(SystemArchitectureDocument.created_at.desc()).first()
 
 
 # ── LLD BACKEND AGENT CRUD HELPERS ─────────────────────────────────────────────

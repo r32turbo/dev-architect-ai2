@@ -10,31 +10,6 @@ from sqlalchemy.orm import DeclarativeBase
 class Base(DeclarativeBase):
     pass
 
-class SystemRequirementDocument(Base):
-    """
-    Stores the output of the System Architect Agent run.
-
-    Columns:
-      id                : auto-increment primary key
-      analyst_document  : the input analyst document
-      output            : the generated architecture document (full markdown)
-      session_id        : the AgentContext session ID
-      created_at        : timestamp of when the document was created
-    """
-    __tablename__ = "system_architecture_documents"
-
-    id                = Column(Integer, primary_key=True, autoincrement=True)
-    requirment_document  = Column(Text, nullable=False)
-    output            = Column(Text, nullable=False)
-    session_id        = Column(String(100), nullable=True)
-    created_at        = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-    def __repr__(self) -> str:
-        return (
-            f"<SystemRequirementDocument id={self.id} "
-            f"created_at={self.created_at}>"
-        )
-
 
 class SystemArchitectureDocument(Base):
     """
@@ -50,7 +25,8 @@ class SystemArchitectureDocument(Base):
     __tablename__ = "system_architecture_documents"
 
     id                = Column(Integer, primary_key=True, autoincrement=True)
-    architecture_document  = Column(Text, nullable=False)
+    analyst_document  = Column(Text, nullable=False)
+    output            = Column(Text, nullable=False)
     session_id        = Column(String(100), nullable=True)
     created_at        = Column(DateTime, default=datetime.utcnow, nullable=False)
 

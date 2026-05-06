@@ -16,7 +16,6 @@ import importlib
 PromptBuilder = importlib.import_module("reusableagents.prompts.base").PromptBuilder
 
 
-<<<<<<< HEAD
 SYSTEM_ARCHITECT_PROMPT = (
     PromptBuilder()
 
@@ -120,15 +119,3 @@ SYSTEM_ARCHITECT_PROMPT = (
         name="input_data",
     )
 )
-=======
-USER_ARCHITECT_PROMPT = """
-Analyze the System Requirement document and generate the System Architecture Report.
-
-The User requirment is as follows :
-{user_input}
-
-Following is the System Requirement Document:
-{requirement_document}
-
-"""
->>>>>>> 1a959f420456e51010b04b7ddcbcb43d3b28eb36

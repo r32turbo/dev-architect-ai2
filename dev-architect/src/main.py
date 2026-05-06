@@ -180,21 +180,6 @@ class LLDDocumentResponse(BaseModel):
     class Config:
         from_attributes = True
 
-# Models for System Architecture generation
-
-class ArchitectureRequest(BaseModel):
-    user_input: str
-    requirement_doc_id: str = ""
-    requirement_doc: str = ""
-
-
-class ArchitectureResponse(BaseModel):
-    id: int
-    agent_type: str
-    user_input: str
-    output: str
-    session_id: str
-    created_at: str
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
@@ -399,16 +384,15 @@ def generate_backend_lld(
 
 @app.post(
     "/generate/architecture",
-    response_model=ArchitectureResponse
+    response_model=LLDDocumentResponse
 )
 def generate_architecture(
-    request: ArchitectureRequest,
+    request: LLDRequest,
     db: Session = Depends(get_db)
 ):
     try:
         logger.info("Received architecture request: %s", request.user_input)
 
-<<<<<<< HEAD
         # ✅ FIX: Create context from request and pass separately
         session_id = str(uuid.uuid4())
         context = create_architecture_context(
@@ -437,46 +421,6 @@ def generate_architecture(
             user_input=request.user_input,
             output=doc.output,
             session_id=doc.session_id or "",
-=======
-        # ✅ FIX: Call run_system_architect directly with input_document
-        # Retrieve the input from the request to start the agent
-        user_input = request.user_input
-        requirement_doc = request.requirement_doc.strip()
-        requirement_doc_id = request.requirement_doc_id.strip()
-
-        # Retrieve the document from the database if requirement_doc is empty and  requirement_doc_id is not empty
-        if not requirement_doc and requirement_doc_id:
-            from db import get_requirement_document
-            req_doc = get_requirement_document(db=db, doc_id=int(requirement_doc_id))
-            if req_doc:
-                requirement_doc = req_doc.content
-                logger.info("Fetched requirement document from DB for architecture generation: %s", requirement_doc_id)
-            else:
-                logger.warning("No requirement document found in DB for ID: %s", requirement_doc_id)
-    
-        # create the context for the system architect agent
-        context = AgentContext()
-        context.state["user_input"] = user_input
-        context.state["requirement_doc"] = requirement_doc
-
-        session_id = ""
-        # Check seesion_id in the context state else create a new one
-        if context.session and context.session.session_id:
-            session_id = context.session.session_id
-        else :
-            context.session.session_id = str(uuid.uuid4())
-            session_id = context.session.session_id
-
-        # call the system architect agent to generate the architecture document with the context
-        doc = run_system_architect(context)
-        
-        return ArchitectureResponse(
-            id=doc.id,
-            agent_type="system_architecture",
-            user_input=user_input,
-            output=doc.architecture_document,
-            session_id=session_id,
->>>>>>> 1a959f420456e51010b04b7ddcbcb43d3b28eb36
             created_at=str(doc.created_at),
         )
 
