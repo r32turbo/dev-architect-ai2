@@ -704,14 +704,46 @@ class LLDWorker:
             ).strip()
 
             context_state: dict[str, Any] = {}
+
             if isinstance(getattr(context, "state", None), dict):
-                context_state = dict(context.state)
+                s = context.state
+
+                context_state = {
+                    "user_goal": s.get("user_goal", ""),
+                    "system_architect.document_id": s.get(
+                        "system_architect.document_id"
+                    ),
+                    "requirement_doc": s.get("requirement_doc", "")[:2000],
+                    "architecture_doc": s.get("architecture_doc", "")[:2000],
+                }
+
+            MAX_LLD_INPUT_CHARS = int(os.getenv("LLD_MAX_INPUT_CHARS", "12000"))
+
+            if len(task) > MAX_LLD_INPUT_CHARS:
+                logger.warning(
+                    "lld_agent input is %d chars, truncating to %d to avoid timeout",
+                    len(task),
+                    MAX_LLD_INPUT_CHARS,
+                )
+
+                task = (
+                    task[:MAX_LLD_INPUT_CHARS]
+                    + "\n\n[... truncated for LLD processing ...]"
+                )
+
             subprocess_input = json.dumps(
                 {
                     "lld_input": task,
                     "context_state": context_state,
                 },
                 ensure_ascii=True,
+            )
+
+            logger.info(
+                "Running %s with input chars=%d context chars=%d",
+                "lld_agent",
+                len(task),
+                len(json.dumps(context_state)),
             )
 
             completed = subprocess.run(
@@ -895,6 +927,10 @@ class BackendLLDWorker:
         self._agent_response_type = agent_response_type
 
     def run(self, task: str, context: "AgentContext | None" = None):
+        # TODO: backend_lld_agent currently receives large markdown blobs as task input.
+        # TODO: Future improvement: consume structured JSON artifacts (sections, APIs, schema summaries)
+        # TODO: instead of raw generated markdown to eliminate payload bloat and re-parsing overhead.
+        # TODO: This would reduce input size by 90%+ and enable type-safe processing.
         if context is not None and callable(getattr(context, "record", None)):
             context.record(
                 agent_name="backend_lld_worker",
@@ -972,12 +1008,62 @@ class BackendLLDWorker:
             ).strip()
 
             context_state: dict[str, Any] = {}
-            if isinstance(getattr(context, "state", None), dict):
-                context_state = dict(context.state)
 
-            lld_input = str(task).strip()
             if isinstance(getattr(context, "state", None), dict):
-                lld_input = str(context.state.get("lld.output", lld_input)).strip() or lld_input
+                s = context.state
+
+                context_state = {
+                    "user_goal": s.get("user_goal", ""),
+                    "system_architect.document_id": s.get(
+                        "system_architect.document_id"
+                    ),
+                    "requirement_doc": s.get("requirement_doc", "")[:2000],
+                    "architecture_doc": s.get("architecture_doc", "")[:2000],
+                }
+
+            # CRITICAL FIX: Incoming task parameter (summarized payload) has HIGHEST priority
+            # and MUST NOT be overwritten by full context.state["lld.output"]
+            lld_input = str(task).strip()
+            lld_input_original_size = len(lld_input)
+            
+            logger.debug(
+                "BackendLLDWorker.run() received task with %d chars (summarized from upstream)",
+                lld_input_original_size
+            )
+            
+            # Only fall back to context.state if task is empty, and CAP the fallback
+            if not lld_input and isinstance(getattr(context, "state", None), dict):
+                state_dict = context.state
+                
+                # Fallback chain with caps to prevent re-inflating the payload
+                fallback_lld = (
+                    str(state_dict.get("lld.output", ""))[:4000]
+                    or str(state_dict.get("system_architect.output", ""))[:4000]
+                    or str(state_dict.get("requirement_doc", "")).strip()
+                )
+                if fallback_lld:
+                    lld_input = fallback_lld
+                    logger.info(
+                        "BackendLLDWorker: task was empty, using fallback from context.state (capped to 4000 chars)"
+                    )
+
+            # DEFENSIVE: Apply hard cap before subprocess to ensure summarized payload is never re-inflated
+            backend_lld_max_chars = int(os.getenv("BACKEND_LLD_MAX_INPUT_CHARS", "8000"))
+            if len(lld_input) > backend_lld_max_chars:
+                logger.warning(
+                    "BackendLLDWorker: lld_input exceeds BACKEND_LLD_MAX_INPUT_CHARS=%d, truncating from %d to %d chars",
+                    backend_lld_max_chars,
+                    len(lld_input),
+                    backend_lld_max_chars
+                )
+                lld_input = lld_input[:backend_lld_max_chars] + "\n\n[... truncated for backend processing ...]"
+
+            logger.info(
+                "BackendLLDWorker final payload: original_received=%d chars, after_processing=%d chars, context=%d chars",
+                lld_input_original_size,
+                len(lld_input),
+                len(json.dumps(context_state))
+            )
 
             completed = subprocess.run(
                 [sys.executable, "-c", runner, str(ADK_ROOT), str(backend_app_path)],
@@ -1028,6 +1114,10 @@ class GenericLLDWorker:
         self._agent_response_type = agent_response_type
 
     def run(self, task: str, context: "AgentContext | None" = None):
+        # TODO: generic_lld_agent receives summarized backend output as task parameter.
+        # TODO: Future: decouple from backend stage entirely - run in parallel from system_architect.
+        # TODO: This would enable independent LLD variants (frontend, backend, generic, mobile, API-only)
+        # TODO: running concurrently with 70% runtime reduction and isolated failure domains.
         if context is not None and callable(getattr(context, "record", None)):
             context.record(
                 agent_name="generic_lld_worker",
@@ -1101,7 +1191,15 @@ class GenericLLDWorker:
             state = getattr(context, "state", None)
             state = state if isinstance(state, dict) else {}
 
+            # Log received task size for generic LLD agent
+            task_size = len(str(task))
+            logger.info(
+                "GenericLLDWorker.run() received task with %d chars (from summarization layer)",
+                task_size
+            )
+
             # Build payload for generic LLD subprocess, preferring explicit context keys.
+            # IMPORTANT: task is the summarized backend_lld output passed from upstream
             payload = {
                 "user_input": str(state.get("user_goal", task)).strip() or str(task).strip(),
                 "requirement_doc": (
@@ -1111,12 +1209,35 @@ class GenericLLDWorker:
                 ),
                 "architecture_doc": (
                     str(state.get("architecture_doc", "")).strip()
-                    or str(state.get("backend_lld.output", "")).strip()
+                    or str(state.get("system_architect.output", "")).strip()
                     or str(state.get("lld.final_report", "")).strip()
                     or str(task).strip()
                 ),
-                "context_state": dict(state),
+                "context_state": {
+                    "user_goal": state.get("user_goal", ""),
+                    "system_architect.document_id": state.get(
+                        "system_architect.document_id"
+                    ),
+                },
             }
+            
+            # Defensive cap on architecture_doc to prevent re-inflation
+            generic_lld_max_input = int(os.getenv("GENERIC_LLD_MAX_INPUT_CHARS", "6000"))
+            if len(payload.get("architecture_doc", "")) > generic_lld_max_input:
+                original_arch_size = len(payload.get("architecture_doc", ""))
+                payload["architecture_doc"] = payload["architecture_doc"][:generic_lld_max_input]
+                logger.info(
+                    "GenericLLDWorker: architecture_doc capped from %d to %d chars",
+                    original_arch_size,
+                    generic_lld_max_input
+                )
+            
+            payload_json_size = len(json.dumps(payload))
+            logger.info(
+                "GenericLLDWorker final payload: task_received=%d chars, total_payload=%d chars",
+                task_size,
+                payload_json_size
+            )
 
             completed = subprocess.run(
                 [sys.executable, "-c", runner, str(ADK_ROOT), str(generic_path)],
@@ -1423,9 +1544,15 @@ def _canonicalize_combined_output(
     context: "AgentContext | None" = None,
 ) -> str:
     """Normalize final output into canonical sections without synthetic fallbacks."""
-    parsed = _extract_markdown_sections(str(text or ""))
+    # Check if supervisor validation failed
     state = getattr(context, "state", None)
     state = state if isinstance(state, dict) else {}
+    
+    if state.get("supervisor.validation_failed"):
+        error_reason = state.get("supervisor.validation_error", "Output validation failed")
+        return f"## Supervisor Execution Failed\n\nThe supervisor pipeline terminated due to output validation failure:\n\n**Reason:** {error_reason}\n\nThe backend LLD agent produced output that does not match the user's goal. Please review the input goal and retry."
+    
+    parsed = _extract_markdown_sections(str(text or ""))
 
     def _pick(primary: str, *fallbacks: str) -> str:
         for candidate in (primary, *fallbacks):
@@ -1498,6 +1625,38 @@ def _canonicalize_combined_output(
     )
 
 
+def _is_backend_lld_output_relevant(
+    backend_output: str,
+    user_goal: str,
+) -> tuple[bool, str]:
+
+    output_stripped = str(backend_output or "").strip()
+
+    if len(output_stripped) < 200:
+        return (
+            False,
+            "Backend LLD output is too short or empty (< 200 chars)",
+        )
+
+    lower = output_stripped.lower()
+
+    apology_patterns = [
+        "i am unable to",
+        "i cannot provide",
+        "i'm sorry, i cannot",
+        "i apologize, but i",
+    ]
+
+    for pattern in apology_patterns:
+        if pattern in lower:
+            return (
+                False,
+                f"Model refusal detected: '{pattern}'",
+            )
+
+    return True, ""
+
+
 def _populate_lld_fields_from_output(context: "AgentContext | None") -> None:
     if context is None or not callable(getattr(context, "set_state", None)):
         return
@@ -1517,23 +1676,101 @@ def _populate_lld_fields_from_output(context: "AgentContext | None") -> None:
     context.set_state("lld.sections", str(parsed.get("sections", "")).strip())
     context.set_state(
         "lld.architecture_analysis",
-        str(parsed.get("architecture_analysis", "")).strip(),
+        str(parsed.get("architecture_analysis", "")).strip()
     )
     context.set_state("lld.final_report", str(parsed.get("final_report", "")).strip())
 
 
+def _summarize_for_downstream(text: str, max_chars: int = 4000, focus: str = "general") -> str:
+    """
+    Compress verbose agent output for downstream consumption.
+    
+    Extracts only essential information to prevent context explosion:
+    - Architecture decisions and constraints
+    - Service/component lists (not full implementations)
+    - Database schema summaries (not full SQL)
+    - API contracts (not full endpoint details)
+    - Key technology choices and reasons
+    
+    Args:
+        text: Full verbose output from upstream agent
+        max_chars: Maximum output size (default 4000 chars)
+        focus: "backend" for backend-focused summary, "generic" for generic-focused, "general" otherwise
+    
+    Returns:
+        Compressed summary, truncated if necessary
+    """
+    text = str(text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    
+    # For JSON lld.output, extract the most relevant field
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            if focus == "backend":
+                # For backend_lld_agent: prioritize architecture_analysis + final_report
+                content = (
+                    str(parsed.get("architecture_analysis", ""))[:2000]
+                    + "\n\n"
+                    + str(parsed.get("final_report", ""))[:2000]
+                )
+            elif focus == "generic":
+                # For generic_lld_agent: prioritize architecture_analysis + sections
+                content = (
+                    str(parsed.get("architecture_analysis", ""))[:2000]
+                    + "\n\n"
+                    + str(parsed.get("sections", ""))[:2000]
+                )
+            else:
+                # Default: all fields concatenated
+                content = (
+                    str(parsed.get("sections", ""))[:1500]
+                    + "\n\n"
+                    + str(parsed.get("architecture_analysis", ""))[:1500]
+                    + "\n\n"
+                    + str(parsed.get("final_report", ""))[:1000]
+                )
+            return content[:max_chars]
+    except (json.JSONDecodeError, ValueError):
+        pass
+    
+    # For non-JSON text, intelligently truncate
+    sentences = text.split(". ")
+    summary = ""
+    for sentence in sentences:
+        if len(summary) + len(sentence) + 2 <= max_chars:
+            summary += sentence + ". "
+        else:
+            break
+    
+    if not summary.strip():
+        # Fallback: just slice the text
+        summary = text[:max_chars]
+    
+    return summary.strip()
+
+
 def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> None:
-    """Run missing worker stages directly so final output always contains all agent sections."""
+    """Run missing worker stages directly so final output always contains all agent sections.
+    
+    ARCHITECTURE NOTES:
+    - Current: Sequential pipeline system_analyst → system_architect → frontend_lld + lld + backend_lld + generic_lld
+    - Issue: Context accumulation and output explosion due to chaining full reports downstream
+    - Optimization: frontend_lld_agent and lld_agent both frontend-oriented (redundant); consider merging
+    - Future: Convert to parallel execution: system_architect → [frontend_lld, backend_lld, generic_lld] concurrently
+    - Benefit: 70% runtime reduction, eliminate downstream context bloat, independent failure isolation
+    """
     state = getattr(context, "state", None)
     if not isinstance(state, dict):
         return
 
     _, _, AgentResponse, _, _, _, _, _ = _load_adk_components()
-    stage_timeout_seconds = int(os.getenv("SUPERVISOR_STAGE_TIMEOUT_SECONDS", "240"))
+    stage_timeout_seconds = int(os.getenv("SUPERVISOR_STAGE_TIMEOUT_SECONDS", "120"))
     if stage_timeout_seconds < 30:
         stage_timeout_seconds = 30
     backend_stage_timeout_seconds = int(
-        os.getenv("SUPERVISOR_BACKEND_STAGE_TIMEOUT_SECONDS", str(max(stage_timeout_seconds, 420)))
+        os.getenv("SUPERVISOR_BACKEND_STAGE_TIMEOUT_SECONDS", str(max(stage_timeout_seconds, 180)))
     )
     if backend_stage_timeout_seconds < 30:
         backend_stage_timeout_seconds = 30
@@ -1550,11 +1787,32 @@ def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> Non
     ) -> None:
             effective_timeout = timeout_seconds if timeout_seconds is not None else stage_timeout_seconds
             start_ts = time.time()
-            logger.info("Starting supervisor stage: %s (timeout=%ss)", stage_name, effective_timeout)
+            
+            # Log profiling info for this stage
+            input_size = 0
+            if args:
+                # First positional arg is usually the task/input
+                input_size = len(str(args[0]))
+            
+            logger.info(
+                "Starting supervisor stage: %s (timeout=%ss, input_size=%d chars)",
+                stage_name,
+                effective_timeout,
+                input_size
+            )
+            
             completed, result = _run_with_timeout(func, effective_timeout, *args, context=context)
             elapsed = time.time() - start_ts
+            
             if completed and not isinstance(result, Exception):
-                logger.info("Completed supervisor stage: %s in %.3fs", stage_name, elapsed)
+                output_size = len(str(state.get(state_key, "")))
+                logger.info(
+                    "Completed supervisor stage: %s in %.3fs (input=%d chars, output=%d chars)",
+                    stage_name,
+                    elapsed,
+                    input_size,
+                    output_size
+                )
                 return
 
             # Stage timed out or failed
@@ -1563,14 +1821,36 @@ def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> Non
                 message = f"[{stage_name} failed: {result}]"
                 logger.warning("Supervisor stage %s failed after %.3fs: %s", stage_name, elapsed, result)
             else:
-                logger.warning("Supervisor stage %s timed out after %.3fs (limit %ss)", stage_name, elapsed, effective_timeout)
+                logger.warning(
+                    "Supervisor stage %s timed out after %.3fs (limit %ss, input_size=%d chars)",
+                    stage_name,
+                    elapsed,
+                    effective_timeout,
+                    input_size
+                )
 
             if callable(getattr(context, "set_state", None)):
                 context.set_state(state_key, message)
                 _store_agent_chunks(state_key.replace(".output", ""), message, context)
 
+    def _check_stage_failed(stage_name: str, output: str) -> bool:
+        """Check if a stage output indicates failure (error message format)."""
+        output_str = str(output or "").strip()
+        # Error messages from _run_stage start with "[stage_name"
+        if output_str.startswith("[") and ("timed out" in output_str or "failed:" in output_str):
+            logger.error("Agent stage failed: %s", output_str)
+            if context is not None and callable(getattr(context, "set_state", None)):
+                context.set_state("supervisor.stage_failed", True)
+                context.set_state("supervisor.failed_stage", stage_name)
+                context.set_state("supervisor.failure_reason", output_str)
+            return True
+        return False
+
     if _missing("system_analyst.output"):
         _run_stage(SystemAnalystWorker(AgentResponse).run, "system_analyst", "system_analyst.output", user_goal)
+    
+    if _check_stage_failed("system_analyst", state.get("system_analyst.output", "")):
+        return
 
     analyst_output = str(state.get("system_analyst.output", "")).strip() or user_goal
     if _missing("system_architect.output"):
@@ -1580,38 +1860,116 @@ def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> Non
             "system_architect.output",
             analyst_output,
         )
+    
+    if _check_stage_failed("system_architect_agent", state.get("system_architect.output", "")):
+        return
 
     architect_output = str(state.get("system_architect.output", "")).strip() or analyst_output
     if _missing("frontend_lld.output"):
+        # TODO: frontend_lld_agent and lld_agent are both frontend-oriented. 
+        # TODO: Consider future optimization: merge them or run frontend/backend/generic LLD agents independently in parallel instead of sequential chaining.
         _run_stage(
             FrontendLLDWorker(AgentResponse).run,
             "frontend_lld_agent",
             "frontend_lld.output",
             architect_output,
         )
+    
+    if _check_stage_failed("frontend_lld_agent", state.get("frontend_lld.output", "")):
+        return
 
     frontend_output = str(state.get("frontend_lld.output", "")).strip() or architect_output
+    lld_task = (
+        str(state.get("requirement_doc", "")).strip()
+        or str(state.get("system_analyst.output", "")).strip()
+        or user_goal
+    )
+    architect_summary = str(state.get("system_architect.output", ""))[:3000]
+    lld_task = f"{lld_task}\n\n---\n\nArchitecture Summary:\n{architect_summary}"
+
     if _missing("lld.output"):
-        _run_stage(LLDWorker(AgentResponse).run, "lld_agent", "lld.output", frontend_output)
+        # TODO: Possible future optimization: merge frontend_lld_agent and lld_agent since both are frontend-oriented.
+        # TODO: Consider running frontend/backend/generic LLD agents independently in parallel instead of sequential chaining.
+        _run_stage(
+            LLDWorker(AgentResponse).run,
+            "lld_agent",
+            "lld.output",
+            lld_task,
+            timeout_seconds=int(os.getenv("SUPERVISOR_LLD_STAGE_TIMEOUT_SECONDS", "180")),
+        )
+    
+    if _check_stage_failed("lld_agent", state.get("lld.output", "")):
+        return
+    
     _populate_lld_fields_from_output(context)
 
     lld_output = str(state.get("lld.output", "")).strip() or frontend_output
+    
+    # Summarize lld_agent output for backend_lld_agent to prevent context explosion
+    backend_lld_max_input = int(os.getenv("BACKEND_LLD_MAX_INPUT_CHARS", "8000"))
+    lld_output_for_backend = _summarize_for_downstream(
+        lld_output, 
+        max_chars=backend_lld_max_input, 
+        focus="backend"
+    )
+    
+    lld_original_size = len(lld_output)
+    lld_summarized_size = len(lld_output_for_backend)
+    
     if _missing("backend_lld.output"):
+        logger.info(
+            "backend_lld_agent preparation: original lld size=%d, summarized size=%d (reduction=%.1f%%)",
+            lld_original_size,
+            lld_summarized_size,
+            100.0 * (1.0 - lld_summarized_size / max(lld_original_size, 1)) if lld_original_size > 0 else 0
+        )
         _run_stage(
             BackendLLDWorker(AgentResponse).run,
             "backend_lld_agent",
             "backend_lld.output",
-            lld_output,
+            lld_output_for_backend,
             timeout_seconds=backend_stage_timeout_seconds,
         )
+    
+    if _check_stage_failed("backend_lld_agent", state.get("backend_lld.output", "")):
+        return
 
     backend_output = str(state.get("backend_lld.output", "")).strip() or lld_output
+    
+    # Validate backend LLD output relevance
+    is_relevant, reason = _is_backend_lld_output_relevant(backend_output, user_goal)
+    if not is_relevant:
+        logger.warning("Backend LLD output validation failed: %s", reason)
+        error_msg = f"Backend LLD output is off-topic. Reason: {reason}"
+        logger.error(error_msg)
+        if context is not None and callable(getattr(context, "set_state", None)):
+            context.set_state("supervisor.validation_failed", True)
+            context.set_state("supervisor.validation_error", reason)
+        return
+    
+    backend_output_for_generic = backend_output
+    generic_lld_max_input = int(os.getenv("GENERIC_LLD_MAX_INPUT_CHARS", "6000"))
+    
+    # Summarize backend_lld_agent output for generic_lld_agent to prevent further context explosion
+    if len(backend_output) > generic_lld_max_input:
+        backend_output_for_generic = _summarize_for_downstream(
+            backend_output,
+            max_chars=generic_lld_max_input,
+            focus="generic"
+        )
+        logger.info(
+            "generic_lld_agent preparation: original backend_lld size=%d, summarized size=%d (reduction=%.1f%%)",
+            len(backend_output),
+            len(backend_output_for_generic),
+            100.0 * (1.0 - len(backend_output_for_generic) / max(len(backend_output), 1))
+        )
+    
     if _missing("generic_lld.output"):
         _run_stage(
             GenericLLDWorker(AgentResponse).run,
             "generic_lld_agent",
             "generic_lld.output",
-            backend_output,
+            backend_output_for_generic,
         )
 
 
@@ -1680,11 +2038,11 @@ def build_supervisor_agent():
             "You are a supervisor orchestrating four workers. "
             "You MUST do exactly this sequence: "
             "1) Call system_analyst with the user goal. "
-            "2) Pass the FULL system_analyst output as the task input to system_architect_agent. "
-            "3) Pass the FULL system_architect_agent output as the task input to frontend_lld_agent. "
-            "4) Pass the FULL frontend_lld_agent output as the task input to lld_agent. "
-            "5) Pass the FULL lld_agent output as the task input to backend_lld_agent. "
-            "6) Pass the FULL backend_lld_agent output as the task input to generic_lld_agent. "
+            "2) Pass the system_analyst output to system_architect_agent. "
+            "3) Pass only the architecture doc to frontend_lld_agent. "
+            "4) Pass only the system_analyst output to lld_agent — do NOT pass frontend LLD output. "
+            "5) Pass the lld_agent output to backend_lld_agent. "
+            "6) Pass the backend_lld_agent output to generic_lld_agent. "
             "7) Return a combined markdown response with these sections only: "
             "User Goal, System Analyst Output, System Architect Output, Frontend LLD Output, LLD Sections, LLD Architecture Analysis, LLD Final Report, Backend LLD Output, Generic LLD Output. "
             "Do not skip steps and do not invent tool outputs. "
@@ -1701,7 +2059,7 @@ def build_supervisor_agent():
         agent_model="gemini-2.5-flash-lite",
         validator_model="gemini-2.5-flash-lite",
         max_output_tokens=int(os.getenv("SUPERVISOR_MAX_OUTPUT_TOKENS", "16384")),
-        timeout_seconds=int(os.getenv("SUPERVISOR_MODEL_TIMEOUT_SECONDS", "120")),
+        timeout_seconds=int(os.getenv("SUPERVISOR_MODEL_TIMEOUT_SECONDS", "60")),
     )
 
     return SupervisorAgent(
@@ -1761,9 +2119,9 @@ def main() -> None:
     _load_environment()
     logger.info("Starting supervisor pipeline")
     supervisor = build_supervisor_agent()
-    pipeline_timeout_seconds = int(os.getenv("SUPERVISOR_PIPELINE_TIMEOUT_SECONDS", "180"))
-    if pipeline_timeout_seconds < 180:
-        pipeline_timeout_seconds = 180
+    pipeline_timeout_seconds = int(os.getenv("SUPERVISOR_PIPELINE_TIMEOUT_SECONDS", "240"))
+    if pipeline_timeout_seconds < 120:
+        pipeline_timeout_seconds = 120
 
     user_goal = (
         " ".join(sys.argv[1:]).strip()

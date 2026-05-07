@@ -14,6 +14,7 @@ Run:
 """
 
 import logging
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -94,6 +95,8 @@ _sup_mod = _load_module_from_path(BASE_DIR / "supervisor-agent" / "sup.py", "sup
 build_supervisor_agent = getattr(_sup_mod, "build_supervisor_agent")
 _canonicalize_combined_output = getattr(_sup_mod, "_canonicalize_combined_output")
 _ensure_agent_outputs = getattr(_sup_mod, "_ensure_agent_outputs")
+_run_with_timeout = getattr(_sup_mod, "_run_with_timeout")
+_is_complete_combined_output = getattr(_sup_mod, "_is_complete_combined_output")
 _populate_lld_fields_from_output = getattr(_sup_mod, "_populate_lld_fields_from_output")
 
 # System Analyst Agent (explicit import of implementation)
@@ -575,7 +578,24 @@ def generate_supervisor(
 
         response = supervisor_agent.run(task=request.user_input, context=ctx)
         raw_output = response.output if hasattr(response, "output") else str(response)
-        _ensure_agent_outputs(request.user_input, ctx)
+
+        if not _is_complete_combined_output(str(raw_output or "")):
+            ensure_timeout = int(
+                os.getenv("SUPERVISOR_ENSURE_TIMEOUT_SECONDS", "600")
+            )
+
+            completed_ensure, _ = _run_with_timeout(
+                _ensure_agent_outputs,
+                ensure_timeout,
+                user_goal=request.user_input,
+                context=ctx,
+            )
+
+            if not completed_ensure:
+                logger.warning(
+                    "_ensure_agent_outputs timed out after %ss — some sections may be missing",
+                    ensure_timeout,
+                )
         _populate_lld_fields_from_output(ctx)
         output = _canonicalize_combined_output(
             str(raw_output or "").strip(),
