@@ -240,16 +240,15 @@ validator = OutputValidator(
 react_prompt = (
     PromptBuilder()
     .add_system(
-        "You are a precise low-level design generator. Follow the task exactly, "
-        "treat the user goal, requirements document, and architecture document "
-        "as equally important inputs, and return only the requested output.",
+        "You are a precise low-level design generator. Generate a medium-length, engineering-dense implementation design document. "
+        "Avoid high-level architecture summaries, generic scalability prose, and shallow one-page outputs. "
+        "Focus on internal flows, runtime behavior, service internals, DTO contracts, validation, retry/DLQ, transaction boundaries, and monitoring.",
         name="persona",
     )
     .add_user(
         "{task}\n\n"
-        "Balanced Input Requirement: Keep the user goal, requirements document, "
-        "and architecture document in balance. Do not let any one source override "
-        "the others.",
+        "Balanced Input Requirement: Keep the user goal, requirements document, and architecture document in balance. "
+        "Do not let any one source override the others.",
         name="task",
     )
 )
@@ -278,6 +277,8 @@ fallback_react_agent = ReusableReActAgent(
 
 
 def _run_task(task: str, context: "AgentContext | None" = None) -> str:
+    # TODO: Primary scaling bottleneck is large markdown output generation at runtime.
+    # TODO: After structured artifact implementation, this should drop to ~50-60 seconds.
     run_kwargs = {"task": task}
     if context is not None:
         run_kwargs["context"] = context
@@ -290,7 +291,83 @@ def _run_task(task: str, context: "AgentContext | None" = None) -> str:
             raise
         logger.warning("Validation path failed, retrying task with fallback agent")
         response = fallback_react_agent.run(**run_kwargs)
-    return response.output if isinstance(response.output, str) else str(response.output)
+
+    raw_output = response.output if isinstance(response.output, str) else str(response.output)
+    raw_size = len(raw_output)
+    
+    # TODO: These caps should become the PRIMARY scalability lever; validation + concise mode are secondary
+    max_output = int(os.getenv("LLD_MAX_OUTPUT_CHARS", "12000"))
+    max_sections = int(os.getenv("LLD_MAX_SECTIONS", "12"))
+    max_subsections = int(os.getenv("LLD_MAX_SUBSECTIONS_PER_SECTION", "6"))
+    
+    result = raw_output
+
+    if raw_size > max_output:
+        logger.warning(
+            "LLD task raw output exceeded cap: %d chars (max=%d), activating concise rerun",
+            raw_size,
+            max_output,
+        )
+        
+        # Count sections to diagnose markdown amplification
+        section_count = raw_output.count('\n##')
+        subsection_count = raw_output.count('\n###')
+        logger.info(
+            "LLD markdown amplification: sections=%d (max=%d), subsections=%d (max=%d)",
+            section_count,
+            max_sections,
+            subsection_count,
+            max_sections * max_subsections,
+        )
+        
+        concise_mode = str(os.getenv("LLD_CONCISE_MODE", "true")).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        
+        if concise_mode:
+            concise_instruction = (
+                f"URGENT: Reduce output to at most {max_output} characters. "
+                f"Enforce: max {max_sections} sections, max {max_subsections} subsections each.\n"
+                "Preserve medium-length engineering depth and technical section structure. "
+                "Remove only repeated, redundant, or filler content. Do NOT compress to a tiny summary.\n"
+                "Each bullet: maximum 18 words. NO repeated patterns across sections.\n"
+                f"Original output:\n\n{raw_output}"
+            )
+            concise_response = react_agent.run(task=concise_instruction, context=context)
+            result = concise_response.output if isinstance(concise_response.output, str) else str(concise_response.output)
+            result_size = len(result)
+            logger.info(
+                "LLD concise-mode rerun: raw=%d→%d chars, ratio=%.2fx",
+                raw_size,
+                result_size,
+                raw_size / max(1, result_size),
+            )
+
+        if len(result) > max_output:
+            logger.warning(
+                "LLD output still exceeds cap after concise mode: %d > %d, truncating",
+                len(result),
+                max_output,
+            )
+            result = result[:max_output].rstrip() + "\n\n[... output truncated for size ...]"
+
+    final_size = len(result)
+    if raw_size and final_size:
+        # Estimate token usage (rough rule: 1 token ≈ 4 chars)
+        raw_tokens = raw_size // 4
+        final_tokens = final_size // 4
+        compression_ratio = raw_size / max(1, final_size)
+        
+        logger.info(
+            "LLD generation profiling: raw=%d chars (%d tokens) → stored=%d chars (%d tokens), "
+            "compression=%.2fx, amplification=%d%% reduction",
+            raw_size, raw_tokens,
+            final_size, final_tokens,
+            compression_ratio,
+            int((1 - final_size/max(1, raw_size)) * 100),
+        )
+    
+    return result
 
 
 def extract_sections(

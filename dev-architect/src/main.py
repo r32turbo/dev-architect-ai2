@@ -181,22 +181,13 @@ class LLDRequest(BaseModel):
     user_input: str
     requirement_doc: str = ""
     architecture_doc: str = ""
+
 class AgentRequest(BaseModel):
     user_input: str
     requirement_doc: str = ""
     requirement_doc_id: str = ""
-
     architecture_doc: str = ""
-    architecture_doc_id: str = ""  
-class AgentResponse(BaseModel):
-    id: int
-    agent_type: str
-    user_input: str
-    output: str
-    output_doc_id: str = ""
-    session_id: str
-    created_at: str
-
+    architecture_doc_id: str = ""
 
 class SupervisorRequest(BaseModel):
     user_input: str
@@ -417,7 +408,7 @@ def generate_backend_lld(
 
 @app.post(
     "/generate/architecture",
-    response_model=AgentResponse
+    response_model=ArchitectureResponse
 )
 def generate_architecture(
     request: ArchitectureRequest,

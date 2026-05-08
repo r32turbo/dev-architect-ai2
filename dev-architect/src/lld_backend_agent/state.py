@@ -2,6 +2,14 @@
 state.py – Input state for Backend LLD Agent
 """
 
+from typing import TypedDict
+
+
+class BackendLLDState(TypedDict, total=False):
+    lld_input: str
+    backend_output: str
+
+
 # ---------- FINAL INPUT FOR LLD AGENT ----------
 LLD_INPUT = """
 ### USER INPUT:

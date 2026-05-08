@@ -5,6 +5,7 @@ Builds and returns the ReusableReActAgent for the Frontend LLD Agent.
 import importlib
 import importlib.util
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -61,6 +62,7 @@ def build_agent():
         validator_model="gemini-2.5-flash-lite",
         agent_temperature=0.0,
         validator_temperature=0.0,
+        max_output_tokens=int(os.getenv("FRONTEND_LLD_MAX_OUTPUT_TOKENS", "4096")),
     )
 
     agent_llm     = create_agent_llm(gemini_config)
@@ -70,8 +72,8 @@ def build_agent():
     agent_config = AgentConfig(
         max_react_iterations=5,
         enable_validation=True,
-        validation_score_threshold=0.7,
-        max_refinement_attempts=2,
+        validation_score_threshold=0.55,
+        max_refinement_attempts=0,
     )
 
     validator = OutputValidator(
@@ -92,18 +94,69 @@ def build_agent():
 
 
 def run_agent(agent, context, user_input, requirement_doc, architecture_doc):
-    """Run the Frontend LLD agent."""
+    """Run the Frontend LLD agent with strict output caps and profiling."""
+    # TODO: Primary bottleneck is generation-time markdown explosion, not orchestration instability.
     logger.info("Running Frontend LLD Agent. session_id=%s", context.session.session_id)
+    max_prompt_input = int(os.getenv("FRONTEND_LLD_MAX_PROMPT_INPUT_CHARS", "3000"))
+    if isinstance(requirement_doc, str) and len(requirement_doc) > max_prompt_input:
+        logger.info(
+            "Frontend LLD prompt input requirement_doc trimmed from %d to %d chars",
+            len(requirement_doc),
+            max_prompt_input,
+        )
+        requirement_doc = requirement_doc[:max_prompt_input] + "\n\n[... truncated requirement doc ...]"
+
+    if isinstance(architecture_doc, str) and len(architecture_doc) > max_prompt_input:
+        logger.info(
+            "Frontend LLD prompt input architecture_doc trimmed from %d to %d chars",
+            len(architecture_doc),
+            max_prompt_input,
+        )
+        architecture_doc = architecture_doc[:max_prompt_input] + "\n\n[... truncated architecture doc ...]"
+
     response = agent.run(
         context=context,
         user_input=user_input,
         requirement_doc=requirement_doc,
         architecture_doc=architecture_doc,
     )
+    
+    # Enforce generation-time output caps
+    raw_output = response.output if isinstance(response.output, str) else str(response.output or "")
+    raw_size = len(raw_output)
+    max_output_chars = int(os.getenv("FRONTEND_LLD_MAX_OUTPUT_CHARS", "9000"))
+    
+    final_output = raw_output
+    if raw_size > max_output_chars:
+        logger.warning(
+            "Frontend LLD output exceeded cap: %d > %d chars, truncating",
+            raw_size,
+            max_output_chars,
+        )
+        final_output = raw_output[:max_output_chars].rstrip() + "\n\n[... truncated for size ...]"
+    
+    # Profile output generation
+    final_size = len(final_output)
+    token_estimate = final_size // 4  # Rough: 1 token ≈ 4 chars
     logger.info(
-        "Frontend LLD completed. score=%.2f refined=%s",
+        "Frontend LLD profiling: raw=%d chars (%d tokens), stored=%d chars (%d tokens), "
+        "output_cap_enforcement=%.0f%%, compression=%.2fx",
+        raw_size,
+        raw_size // 4,
+        final_size,
+        token_estimate,
+        (1 - final_size / max(1, raw_size)) * 100,
+        raw_size / max(1, final_size),
+    )
+    
+    # Update response with capped output
+    response.output = final_output
+    
+    logger.info(
+        "Frontend LLD completed. score=%.2f refined=%s output_size=%d",
         response.validation_score or 0,
         response.was_refined,
+        final_size,
     )
     return response
 

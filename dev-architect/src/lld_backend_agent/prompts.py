@@ -48,163 +48,143 @@ BACKEND_LLD_TASK = (
 def build_backend_lld_prompt(lld_input: str) -> object:
     """
     Build a PromptBuilder with lld_input embedded directly.
-    This avoids the {task} placeholder substitution bug.
+    Enhanced to generate comprehensive backend LLD with technical depth.
+    
+    CRITICAL: This prompt produces output in 6k-8k character range.
+    Uses structured tables, compact bullets, and zero-redundancy rules.
     """
-    # Escape any literal braces in the provided input so that
-    # PromptPart.render (which uses str.format_map) does not
-    # raise ValueError on unmatched '{' or '}' characters.
     escaped_input = lld_input.replace("{", "{{").replace("}", "}}")
 
     return (
         PromptBuilder()
 
-        # ── SYSTEM PROMPT ──────────────────────────────────────
         .add_system(
-            """
-# PERSONA / ROLE
-
-You are a Staff-Level Backend Architect with 10–15 years of experience.
-
-You specialize in:
-- Designing large-scale distributed systems
-- Microservices architecture
-- Scalability, reliability, and fault tolerance
-- Writing production-ready backend designs
-
-You think in:
-- Trade-offs (performance vs cost vs complexity)
-- Failure handling
-- Maintainability and extensibility
-
-You DO NOT:
-- Give generic answers
-- Produce vague or high-level fluff
-- Skip critical design decisions
-- Ask for clarification — generate immediately
-
-# CONTEXT
-
-You are designing backend systems for real-world production environments.
-
-The system must:
-- Handle high traffic and scale efficiently
-- Be resilient to failures
-- Maintain strong security practices
-- Be implementable by engineering teams
-
-# OUTPUT CONSTRAINTS
-
-Your output MUST:
-- Be structured Markdown only
-- Be implementation-ready (not theoretical)
-- Include API endpoints with full JSON request/response examples
-- Include detailed database schema with field types, PKs, FKs
-- Include service interactions and sequence flows
-- Include scalability and failure handling strategies
-- Start with title: # BACKEND LLD REPORT
-
-Avoid:
-- Fluff or generic explanations
-- Missing sections
-- Review-style or audit language
-- Placeholder text
-- Asking for more input
-"""
+            "You are a Staff-level backend architect. Generate PRODUCTION-READY Backend LLD in Markdown. "
+            "Output must be implementation-focused, technically deep, and concise. "
+            "Use tables, structured bullets, and code blocks. Keep TOTAL output 6000-10000 characters. "
+            "Focus on internal service implementation: folder layout, repository/service/controller layers, DTOs/entities, transactions, sagas, retries, idempotency, caching, and queue consumers/producers."
         )
 
-        # ── USER PROMPT (lld_input baked in) ───────────────────
+        .add_system(
+            "MANDATORY GENERATION RULES:\n"
+            "1. 9 top-level sections (Services, Data, APIs, Events, Workflows, Security, Scalability, Observability, Reliability)\n"
+            "2. Use 2-4 column tables for: entity relationships, endpoints, service responsibilities, workflows, state transitions\n"
+            "3. Each bullet: 12-18 words, implementation-focused, no rationale\n"
+            "4. NO repeated tech terms across sections (mention Kubernetes once, Redis once)\n"
+            "5. NO generic explanations or 'why we do this' preambles\n"
+            "6. Focus on WHAT+HOW, not WHY or WHEN\n"
+            "7. If approaching size limit: drop subsection descriptions, keep facts only\n"
+            "8. Avoid prose; prefer tables, lists, code snippets",
+            name="generation_rules",
+        )
+
+        .add_system(
+            "TECHNICAL DEPTH REQUIREMENTS:\n"
+            "Services: Name, responsibilities, ownership boundaries, folder/module layout, repository/service/controller layers, validators, processors, schedulers, event publishers, cache handlers, retry handlers, orchestration modules, auth/state handling\n"
+            "Data: Entities + key fields, relationships, indexing strategy, replication/caching, transaction boundaries, optimistic locking, idempotency keys, cache invalidation\n"
+            "APIs: Grouped by domain, endpoints with METHOD /path, request purpose, auth requirements, validation rules, pagination, versioning, response/error structure, inter-service contracts, contract examples\n"
+            "Events: Queues/topics, publishers/subscribers, async communication patterns, retry policy, DLQ handling, idempotency, consumer groups, ordering, eventual consistency notes\n"
+            "Workflows: Service interaction flows, saga patterns, state machines (PENDING → PAID → PREPARING → PICKED_UP → DELIVERED), payment rollback, delivery assignment, notification triggers\n"
+            "Security: Auth flow (JWT/mTLS), RBAC rules, rate limiting, encryption at-rest/in-transit, audit logging, service-to-service trust\n"
+            "Scalability: Autoscaling triggers, load balancing, connection pooling, async workers, deployment containers, cache scaling, broker partitioning\n"
+            "Observability: Log aggregation targets, metrics to track, distributed tracing headers, span correlation, alert thresholds, dashboards\n"
+            "Reliability: Retry patterns, circuit breaker config, timeout values, fallback mechanisms, DLQ recovery, consistency guarantees",
+            name="depth_requirements",
+        )
+
+        .add_system(
+            "REDUNDANCY ELIMINATION:\n"
+            "- Mention authentication mechanism ONCE in Security section only; do not repeat in APIs or other sections\n"
+            "- Mention deployment platform (Kubernetes/Docker) ONCE in Scalability section only\n"
+            "- Mention monitoring tools/strategies ONCE in Observability section only\n"
+            "- Do not reiterate 'security best practices' or 'architectural principles' across sections\n"
+            "- Each section should add NEW implementation details, not recap previous sections\n"
+            "- When size approaches limit: cut descriptive text, keep ONLY configuration values and specifics",
+            name="redundancy_rules",
+        )
+
+        .add_system(
+            "OUTPUT FORMATTING FOR ORCHESTRATION:\n"
+            "- Use Markdown tables with consistent column counts (3-4 columns per table)\n"
+            "- Use code blocks for: config examples, schema snippets, response formats\n"
+            "- Use bullet lists for: strategies, thresholds, targets, requirements\n"
+            "- AVOID: nested bullet lists (max 1 level of nesting)\n"
+            "- AVOID: multi-line descriptions per row; use short phrases or values\n"
+            "- All output must be valid Markdown (parseable by downstream systems)\n"
+            "- Do not include front matter or metadata; start with # BACKEND LOW-LEVEL DESIGN",
+            name="orchestration_format",
+        )
+
         .add_user(
-            """
-# TASK
-
-Generate a **production-grade Backend Low-Level Design (LLD)** for the system described below.
-
-# SYSTEM DESCRIPTION
-
-\"\"\"
-{lld_input}
-\"\"\"
-
- 
-# REQUIRED OUTPUT STRUCTURE
-
-# BACKEND LLD REPORT
-
-## Opening Summary
-1) Goal Summary:          (2 sentences — what problem this solves)
-2) System Scope:          (2 sentences — what is and isn't included)
-3) Implementation Focus:  (2 sentences — key technical priorities)
-
-## 1. System Overview
-- Problem definition
-- Key features
-- Scale assumptions (users, requests/sec, data volume)
-
-## 2. Architecture Design
-- Monolith / Microservices decision with justification
-- Core components and their responsibilities
-- Inter-service communication patterns
-
-## 3. API Design
-For EACH endpoint include:
-- Endpoint URL
-- HTTP Method
-- Description
-- Request JSON (with field types)
-- Response JSON (success + error)
-- Status codes
-- Edge cases
-
-## 4. Database Design
-- Tables with all fields and data types
-- Primary Keys and Foreign Keys
-- Table relationships (1:1, 1:N, M:N)
-- Indexing strategy
-- Choice of DB engine and justification
-
-## 5. Data Models / Entities
-- Core entity definitions (TypeScript or JSON schema style)
-
-## 6. Service Layer Design
-- Service responsibilities
-- Business logic flows (numbered steps)
-- Inter-service calls
-
-## 7. Sequence Flow
-- Step-by-step flows for critical operations
-
-## 8. Scalability & Performance
-- Caching strategy (Redis, CDN, etc.)
-- Load balancing approach
-- Database scaling (sharding / replication)
-- Async processing (queues, workers)
-
-## 9. Security
-- Authentication & Authorization mechanism
-- Data encryption (at rest and in transit)
-- Common vulnerability mitigations (OWASP)
-
-## 10. Error Handling
-- Error response format
-- Retry strategies
-- Circuit breaker patterns
-
-## 11. Observability
-- Logging strategy
-- Monitoring metrics
-- Alerting rules
-
-## 12. Tech Stack
-- All services, databases, tools, and infrastructure with justification
-
----
-
-# FINAL INSTRUCTION
-
-Generate the full Backend LLD now.
-Be precise. Be practical. Be complete.
-Do NOT ask for clarification — use reasonable assumptions and state them.
-""".format(lld_input=escaped_input)
+            "# BACKEND LOW-LEVEL DESIGN\n\n"
+            "## 1. Service Architecture\n"
+            "| Service | Responsibilities | Ownership Boundaries | Internal Components | Interactions |\n"
+            "|---------|------------------|----------------------|---------------------|--------------|\n"
+            "| (Name) | (What it does, orchestration responsibilities) | (Team/owner, auth/state handling) | (Folders, validators, processors, schedulers, event publishers, cache handlers, retry handlers) | (Sync/async with other services) |\n"
+            "Include: request flows, service boundaries, folder layout.\n\n"
+            "## 2. Data Models & Database Design\n"
+            "| Entity | Key Fields | Relationships | Indexing/Caching |\n"
+            "|--------|-----------|----------------|------------------|\n"
+            "| (Name) | (Fields) | (FK, 1-to-N) | (Indexed on, cached via) |\n"
+            "Include: transactional vs analytical storage, replication strategy, scaling approach.\n\n"
+            "## 3. API Design\n"
+            "Group by domain (Users, Orders, etc). For each endpoint: METHOD /path - Purpose - Auth required - Validation - Pagination - Response/Error structure.\n"
+            "Include: versioning strategy, inter-service contracts, rate limiting per endpoint.\n\n"
+            "## 4. Event-Driven Architecture\n"
+            "| Queue/Topic | Publishers | Subscribers | Retry/DLQ | Idempotency | Consistency |\n"
+            "|-------------|-----------|------------|-----------|-------------|-------------|\n"
+            "| (Name) | (Services) | (Services) | (Policy) | (Key/token strategy) | (Eventual consistency notes) |\n"
+            "Include: async communication patterns, ordering requirements.\n\n"
+            "## 5. Workflows & State Transitions\n"
+            "| Workflow | Steps | State Transitions | Triggers | Cross-Service Interactions |\n"
+            "|----------|-------|-------------------|----------|---------------------------|\n"
+            "| (e.g., Order Lifecycle) | (PENDING → PAID → PREPARING → PICKED_UP → DELIVERED) | (State changes) | (Events/APIs) | (Service calls, async flows) |\n"
+            "Include: payment confirmation flow, delivery assignment flow, notification triggers, async processing sequences.\n\n"
+            "## 6. Security & Auth\n"
+            "Auth flow (JWT/mTLS), RBAC matrix (role -> permissions), API security (keys/OAuth), encryption at-rest/transit, audit logging targets.\n\n"
+            "## 7. Scalability & Deployment\n"
+            "Autoscaling triggers, load balancing strategy, connection pooling, async job workers, container orchestration, health checks, service discovery.\n\n"
+            "## 8. Observability\n"
+            "Centralized logging (targets), metrics to track, distributed tracing headers, monitoring alerts, dashboard key metrics.\n\n"
+            "## 9. Reliability & Error Handling\n"
+            "Retry patterns (exponential backoff), circuit breaker config, timeout values, fallback mechanisms, recovery workflows, consistency patterns.\n\n"
+            "### Engineering Examples\n\n"
+            "**Order Workflow Example:**\n"
+            "1. Validate order payload against JSON schema.\n"
+            "2. Check inventory availability with optimistic locking.\n"
+            "3. Reserve inventory using transactional update.\n"
+            "4. Create pending order with idempotency key.\n"
+            "5. Emit `order.created` event to Kafka topic.\n"
+            "6. Await payment confirmation via webhook.\n"
+            "7. Transition order state to CONFIRMED.\n"
+            "8. Trigger async preparation workflow.\n"
+            "9. Send notification to customer service.\n\n"
+            "**Folder Structure Example:**\n"
+            "order-service/\n"
+            "├── controllers/\n"
+            "│   ├── OrderController.java\n"
+            "│   └── PaymentController.java\n"
+            "├── services/\n"
+            "│   ├── OrderService.java\n"
+            "│   └── InventoryService.java\n"
+            "├── repositories/\n"
+            "│   ├── OrderRepository.java\n"
+            "│   └── InventoryRepository.java\n"
+            "├── dto/\n"
+            "│   ├── OrderRequest.java\n"
+            "│   └── OrderResponse.java\n"
+            "├── entities/\n"
+            "│   ├── Order.java\n"
+            "│   └── Inventory.java\n"
+            "├── consumers/\n"
+            "│   └── PaymentConsumer.java\n"
+            "├── producers/\n"
+            "│   └── OrderProducer.java\n"
+            "├── middlewares/\n"
+            "│   └── AuthMiddleware.java\n"
+            "└── config/\n"
+            "    └── KafkaConfig.java\n\n"
+            "System description:\n{lld_input}".format(lld_input=escaped_input)
         )
     )
 

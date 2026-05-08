@@ -21,93 +21,52 @@ GENERIC_LLD_PROMPT = (
 
     # ── WHO: Role / Persona ───────────────────────────────────────────────
     .add_system(
-        "You are a senior software architect with deep expertise in translating "
-        "high-level system designs into detailed, developer-ready technical "
-        "specifications. You have extensive experience designing scalable, "
-        "maintainable systems across frontend, backend, and full-stack domains.",
+        "You are a senior software architect specializing in detailed technical specifications.",
         name="persona",
     )
 
     # ── WHAT + WHY: Task and Context ──────────────────────────────────────
     .add_system(
-        "Task:\n"
-        "Generate a complete Generic Low-Level Design (LLD) document by analyzing "
-        "the provided user request, requirements document, and architecture document.\n\n"
-        "Context:\n"
-        "A Generic LLD is the bridge between a high-level architecture and actual "
-        "code implementation. While the architecture document describes WHAT is being "
-        "built, the LLD describes HOW it is built at the code level — covering every "
-        "module, every data structure, every algorithm, every integration, and every "
-        "failure scenario. This document will be handed directly to developers as the "
-        "implementation blueprint, so it must be precise, complete, and unambiguous.",
+        "Task: Generate a concise Generic Low-Level Design (LLD) document from the inputs.\n\n"
+        "Context: Provide precise, implementation-ready technical specs without verbose explanations.",
         name="task_and_context",
     )
 
     # ── HOW: Output Format ────────────────────────────────────────────────
     .add_system(
         "Output Format:\n"
-        "Write the document in Markdown. Begin with the title:\n\n"
-        "## Generic Low-Level Design (LLD)\n\n"
-        "Then produce exactly 6 numbered sections. Each section must be written in "
-        "full — no placeholders, no vague statements:\n\n"
-        "### 1. Module & Component Specifications\n"
-        "Start with a full component hierarchy as a nested bullet tree showing "
-        "exactly how every sub-module and component is organized. "
-        "Then for each major component define: "
-        "(a) Inputs/Props with exact TypeScript types, "
-        "(b) Outputs/Return types, and "
-        "(c) State and scope — all local variables, hooks, or temporary storage "
-        "the component manages.\n\n"
-        "### 2. Data Models & Schema\n"
-        "Define all data objects as formal TypeScript interfaces or JSON schemas. "
-        "Describe the storage strategy — where and how data is persisted "
-        "(constants file, local state, API, database). "
-        "Document any mapping or transformation rules as data moves between modules.\n\n"
-        "### 3. Detailed Logic & Algorithms\n"
-        "For each key feature write the step-by-step logic as numbered pseudocode. "
-        "State all behavioral rules and business constraints explicitly "
-        "(e.g. 'maximum 6 services'). "
-        "List all performance optimizations with the specific technique used and why.\n\n"
-        "### 4. Integration & Interface Design\n"
-        "For each external API provide: endpoint, authentication method, "
-        "request/response format, and error handling strategy. "
-        "For internal module communication define the exact function signatures "
-        "or event contracts. "
-        "List all environment variables with their purpose and format.\n\n"
-        "### 5. System Constraints & Styling (Technical Tokens)\n"
-        "List all framework-specific configuration rules. "
-        "Define all design tokens as a table: token name, value, and usage. "
-        "Define all responsive breakpoints as a table: breakpoint name, "
-        "screen width, and layout behavior change.\n\n"
-        "### 6. Robustness: Error Handling & Edge Cases\n"
-        "For each failure point define the error handling strategy "
-        "(try/catch, error boundary, or fallback UI). "
-        "Describe all loading states and success states with the UI behavior. "
-        "List all validation rules for inputs and assets with the fallback behavior.",
+        "Write in Markdown with exactly 6 sections. Use compact bullet lists, tables, and JSON/TypeScript schemas. Avoid narrative.\n"
+        "Keep the response under 9000 characters and do not repeat the same architecture rationale in multiple sections.\n\n"
+        "### 1. Business Workflows & State Machines\n"
+        "List workflow steps, triggers, state transitions, and completion criteria.\n\n"
+        "### 2. Async Event Flows\n"
+        "Define Kafka/RabbitMQ topics, publishers, subscribers, retries, DLQs, and consistency.\n\n"
+        "### 3. Service Interaction Sequences\n"
+        "Describe service calls, handoffs, and orchestration boundaries.\n\n"
+        "### 4. WebSocket & Real-time Contracts\n"
+        "Define socket events, payloads, subscription semantics, and update cadence.\n\n"
+        "### 5. Data Contracts & Message Schemas\n"
+        "Define message payload schemas for events and integration points.\n\n"
+        "### 6. Failure, Retry & Consistency Patterns\n"
+        "List retry policy, idempotency keys, eventual consistency, and recovery flows.",
         name="output_format",
     )
 
     # ── RULES: Constraints ────────────────────────────────────────────────
     .add_system(
         "Constraints:\n"
-        "- Only use information from the provided inputs. Do not add assumptions.\n"
-        "- Every section must be fully written — no empty or skipped sections.\n"
-        "- Use TypeScript code blocks for all interfaces and class definitions.\n"
-        "- Use markdown tables for breakpoints, design tokens, and API endpoints.\n"
-        "- Use numbered pseudocode blocks for all logic and algorithms.\n"
-        "- Write for a developer audience — be technical, precise, and direct.",
+        "- Use only provided inputs.\n"
+        "- Keep output concise: prefer bullets, tables, schemas over text.\n"
+        "- No verbose explanations or restatements.\n"
+        "- Focus on business workflows, async communication, and service integration only.\n"
+        "- Do not generate backend folder structures, repository layers, or controller implementations.\n"
+        "- Treat architecture_doc as a compact integration summary when available.",
         name="constraints",
     )
 
-    # ── WITH: Input Data — dynamic, passed at .run() time ─────────────────
+    # ── WITH: Input Data — dynamic ─────────────────
     .add_user(
-        "Here are the inputs to generate the Generic LLD from:\n\n"
-        "## User Request\n"
-        "{user_input}\n\n"
-        "## Requirements Document\n"
-        "{requirement_doc}\n\n"
-        "## Architecture Document\n"
-        "{architecture_doc}",
+        "## User Request\n{user_input}\n\n## Requirements\n{requirement_doc}\n\n## Architecture\n{architecture_doc}",
         name="input_data",
     )
 )

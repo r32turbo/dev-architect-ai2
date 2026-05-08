@@ -87,6 +87,7 @@ def build_agent(prompt):
         validator_model="gemini-2.5-flash-lite",
         agent_temperature=0.0,
         validator_temperature=0.0,
+        max_output_tokens=int(os.getenv("BACKEND_LLD_MAX_OUTPUT_TOKENS", "4096")),
     )
 
     agent_llm     = create_agent_llm(gemini_config)
@@ -106,29 +107,8 @@ def build_agent(prompt):
             max_react_iterations=int(os.getenv("BACKEND_LLD_MAX_REACT_ITERATIONS", "2")),
             enable_validation=enable_validation,
             validation_score_threshold=0.5,
-            max_refinement_attempts=int(os.getenv("BACKEND_LLD_MAX_REFINEMENT_ATTEMPTS", "1")),
+            max_refinement_attempts=int(os.getenv("BACKEND_LLD_MAX_REFINEMENT_ATTEMPTS", "0")),
         ),
-    )
-
-
-# ============================================================
-# ✅ CREATE CONTEXT
-# ============================================================
-
-def create_context(
-    user_input: str,
-    requirement_doc: str,
-    architecture_doc: str | None = None,
-) -> "AgentContext":
-    from reusableagents.context import AgentContext, SessionInfo
-
-    state = {"user_input": user_input, "requirement_doc": requirement_doc}
-    if architecture_doc is not None:
-        state["architecture_doc"] = architecture_doc
-
-    return AgentContext(
-        session=SessionInfo(session_id=str(uuid.uuid4()), metadata={}),
-        state=state,
     )
 
 
@@ -207,6 +187,33 @@ def _resolve_lld_input(
     return ""
 
 
+def _backend_output_needs_refinement(output: str) -> bool:
+    if not output:
+        return True
+
+    min_chars = int(os.getenv("BACKEND_LLD_MIN_OUTPUT_CHARS", "4500"))
+    if len(output) < min_chars:
+        return True
+
+    required_sections = [
+        "## 1. Service Architecture",
+        "## 2. Data Models & Database Design",
+        "## 3. API Design",
+        "## 4. Event-Driven Architecture",
+        "## 5. Workflows & State Transitions",
+        "## 6. Security & Auth",
+        "## 7. Scalability & Deployment",
+        "## 8. Observability",
+        "## 9. Reliability & Error Handling",
+    ]
+    normalized = _normalize_for_validation(output)
+    return any(section.lower() not in normalized for section in required_sections)
+
+
+def _normalize_for_validation(text: str) -> str:
+    return text.lower()
+
+
 # ============================================================
 # ✅ RUN AGENT
 # ✅ KEY FIX: build_backend_lld_prompt(chunk) called per chunk
@@ -226,7 +233,8 @@ def run_backend_lld(
 
     chunks = chunk_text(resolved_input, chunk_size=8000, overlap=500)
     outputs = []
-
+    max_output_per_chunk = int(os.getenv("BACKEND_LLD_MAX_OUTPUT_PER_CHUNK", "8000"))
+    
     for i, chunk in enumerate(chunks):
 
         # ✅ Build a fresh prompt with this chunk baked in
@@ -258,14 +266,90 @@ def run_backend_lld(
             if hasattr(response, "output")
             else str(response)
         )
+        
+        # Enforce per-chunk output cap
+        output_size = len(output)
+        if output_size > max_output_per_chunk:
+            logger.warning(
+                "Backend LLD chunk %d exceeded output cap: %d > %d chars, truncating",
+                i + 1,
+                output_size,
+                max_output_per_chunk,
+            )
+            output = output[:max_output_per_chunk].rstrip() + "\n\n[... truncated ...]"
+        
+        logger.info(
+            "Backend LLD chunk %d: generated %d chars (cap=%d), token_est=%d",
+            i + 1,
+            len(output),
+            max_output_per_chunk,
+            len(output) // 4,
+        )
+        
         outputs.append(output)
 
     combined = "\n\n---\n\n".join(outputs)
 
-    # Strip accidental review-style words
+    # Strip accidental review-style words to reduce verbosity
     blacklist = ["review", "strength", "weakness"]
     for word in blacklist:
         combined = combined.replace(word, "")
+
+    # Enforce total output cap
+    max_total_output = int(os.getenv("BACKEND_LLD_MAX_TOTAL_OUTPUT", "10000"))
+    combined_size = len(combined)
+    if combined_size > max_total_output:
+        logger.warning(
+            "Backend LLD total output exceeded cap: %d > %d chars, truncating final output",
+            combined_size,
+            max_total_output,
+        )
+        combined = combined[:max_total_output].rstrip() + "\n\n[... final output truncated ...]"
+
+    if _backend_output_needs_refinement(combined):
+        logger.warning(
+            "Backend LLD output failed validation (length=%d). Retrying once with an expansion hint.",
+            len(combined),
+        )
+        prompt = build_backend_lld_prompt(resolved_input).add_system(
+            "The previous response was too brief or omitted required backend sections. "
+            "Regenerate again with complete implementation detail for all required sections. "
+            "Keep the same Markdown structure and preserve technical depth."
+        )
+        agent = build_agent(prompt)
+        retry_task_label = "Regenerate Backend LLD with full required sections"
+
+        retry_kwargs = {
+            "task": retry_task_label,
+            "state": {"lld_input": resolved_input},
+        }
+        if context is not None:
+            retry_kwargs["context"] = context
+
+        retry_response = agent.run(**retry_kwargs)
+        retry_output = (
+            retry_response.output
+            if hasattr(retry_response, "output")
+            else str(retry_response)
+        )
+
+        if retry_output and not _backend_output_needs_refinement(retry_output):
+            combined = retry_output.strip()
+            combined_size = len(combined)
+        else:
+            logger.warning(
+                "Backend LLD retry did not produce a valid expanded result; keeping original output."
+            )
+
+        if combined_size > max_total_output:
+            combined = combined[:max_total_output].rstrip() + "\n\n[... final output truncated ...]"
+
+    logger.info(
+        "Backend LLD profiling: total=%d chars (cap=%d), token_est=%d, compression_applied",
+        len(combined),
+        max_total_output,
+        len(combined) // 4,
+    )
 
     return combined.strip()
 

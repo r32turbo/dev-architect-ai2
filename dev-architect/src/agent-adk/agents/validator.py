@@ -51,7 +51,14 @@ Refinement
 ----------
 When the score is below the acceptable threshold, write an improved version \
 of the response in the ``refined_output`` field.  The refined version must \
-directly answer the original request without any meta-commentary.\
+directly answer the original request without any meta-commentary.
+
+Guidance
+--------
+Do not reject a response for minor phrasing, word choice, or stylistic 
+differences when the output is otherwise correct, complete, and structurally 
+accurate.  Only mark the response as invalid when it omits required sections, 
+violates the requested format, or contains incorrect technical content.
 """
 
 _DEFAULT_VALIDATION_USER = """\

@@ -498,8 +498,18 @@ class ReusableReActAgent:
             validation.is_valid,
             validation.score,
         )
+        logger.debug("Validation feedback: %s", validation.feedback)
 
         if validation.is_valid:
+            output_size = len(str(agent_output))
+            token_estimate = max(1, output_size // 4)
+            logger.info(
+                "Agent output profiling: size=%d chars, tokens_est=%d, validation_score=%.2f, was_refined=%s",
+                output_size,
+                token_estimate,
+                validation.score,
+                False,
+            )
             return AgentResponse(
                 output=agent_output,
                 is_validated=True,
@@ -564,6 +574,19 @@ class ReusableReActAgent:
                 current_output = validation.refined_output
                 break
 
+        output_size = len(str(current_output))
+        token_estimate = max(1, output_size // 4)
+        input_size = len(str(agent_output))
+        compression_ratio = float(input_size) / max(1, output_size)
+        logger.info(
+            "Agent output profiling: size=%d chars, tokens_est=%d, validation_score=%.2f, was_refined=%s, attempts=%d, compression_ratio=%.2f",
+            output_size,
+            token_estimate,
+            validation.score,
+            True,
+            attempts,
+            compression_ratio,
+        )
         return AgentResponse(
             output=current_output,
             is_validated=True,

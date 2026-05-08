@@ -16,6 +16,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage
 
 try:
     from database.db import (
@@ -137,6 +138,165 @@ else:
         sys.stderr = _Tee(sys.__stderr__, file_obj)
     except Exception:
         logger.exception("Failed to tee stdout/stderr to supervisor log file")
+
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+
+
+def _find_tokens(text: str, token_map: dict[str, str]) -> list[str]:
+    found = []
+    for token, label in token_map.items():
+        if token in text and label not in found:
+            found.append(label)
+    return found
+
+
+def _build_structured_context(
+    user_goal: str,
+    requirement_doc: str,
+    architecture_doc: str,
+    max_chars: int = 4500,
+) -> str:
+    """Build a compact structured summary from upstream docs for agent input."""
+    user_goal = str(user_goal or "").strip()
+    requirement_doc = str(requirement_doc or "").strip()
+    architecture_doc = str(architecture_doc or "").strip()
+
+    normalized = _normalize_text(" ".join([user_goal, requirement_doc, architecture_doc]))
+    roles = _find_tokens(
+        normalized,
+        {
+            "customer": "customer",
+            "restaurant owner": "restaurant_owner",
+            "delivery partner": "delivery_partner",
+            "admin": "admin",
+            "operator": "admin",
+            "merchant": "merchant",
+            "support": "support",
+        },
+    )
+    services = _find_tokens(
+        normalized,
+        {
+            "user service": "user",
+            "restaurant service": "restaurant",
+            "order service": "order",
+            "delivery service": "delivery",
+            "payment service": "payment",
+            "notification service": "notification",
+            "analytics service": "analytics",
+            "inventory service": "inventory",
+            "auth service": "auth",
+        },
+    )
+    events = _find_tokens(
+        normalized,
+        {
+            "order.created": "order.created",
+            "order.updated": "order.updated",
+            "payment.confirmed": "payment.confirmed",
+            "delivery.assigned": "delivery.assigned",
+            "delivery.completed": "delivery.completed",
+            "payment.failed": "payment.failed",
+            "menu.updated": "menu.updated",
+            "user.created": "user.created",
+            "session.expired": "session.expired",
+        },
+    )
+    databases = _find_tokens(
+        normalized,
+        {
+            "postgresql": "PostgreSQL",
+            "redis": "Redis",
+            "kafka": "Kafka",
+            "rabbitmq": "RabbitMQ",
+            "mongodb": "MongoDB",
+            "mysql": "MySQL",
+            "cassandra": "Cassandra",
+        },
+    )
+    messaging = _find_tokens(
+        normalized,
+        {
+            "websocket": "WebSocket",
+            "rest": "REST",
+            "graphql": "GraphQL",
+            "kafka": "Kafka",
+            "rabbitmq": "RabbitMQ",
+            "http": "HTTP",
+        },
+    )
+    auth = "JWT" if "jwt" in normalized else ("mTLS" if "mtls" in normalized else "unknown")
+    constraints = []
+    if "real-time" in normalized or "websocket" in normalized:
+        constraints.append("real-time")
+    if "role-based access" in normalized or "rbac" in normalized:
+        constraints.append("role-based access")
+    if "cloud" in normalized or "scalability" in normalized:
+        constraints.append("scalable")
+    if "payment" in normalized and "rollback" in normalized:
+        constraints.append("payment rollback")
+    if "idempotent" in normalized or "idempotency" in normalized:
+        constraints.append("idempotent operations")
+    if "circuit breaker" in normalized or "retry" in normalized:
+        constraints.append("retry/circuit breaker")
+
+    workflow_tokens = _find_tokens(
+        normalized,
+        {
+            "pending": "PENDING",
+            "paid": "PAID",
+            "preparing": "PREPARING",
+            "picked_up": "PICKED_UP",
+            "delivered": "DELIVERED",
+            "cancelled": "CANCELLED",
+            "failed": "FAILED",
+        },
+    )
+
+    implementation_notes = []
+    if "transaction" in normalized:
+        implementation_notes.append("transaction boundaries")
+    if "saga" in normalized:
+        implementation_notes.append("saga/orchestration")
+    if "cache" in normalized:
+        implementation_notes.append("cache invalidation")
+    if "idempotency" in normalized:
+        implementation_notes.append("idempotency keys")
+    if "dlq" in normalized or "dead letter" in normalized:
+        implementation_notes.append("DLQ handling")
+    if "audit" in normalized or "logging" in normalized:
+        implementation_notes.append("audit/logging")
+
+    architecture_excerpt = " ".join(architecture_doc.split())[:2400]
+    requirement_excerpt = " ".join(requirement_doc.split())[:1200]
+
+    summary_lines = [
+        "Structured Context Summary:",
+        f"User Goal: {user_goal or 'unspecified'}",
+        f"Roles: {', '.join(roles) or 'unspecified'}",
+        f"Services: {', '.join(services) or 'unspecified'}",
+        f"Events: {', '.join(events) or 'unspecified'}",
+        f"Databases: {', '.join(databases) or 'unspecified'}",
+        f"Messaging: {', '.join(dict.fromkeys(messaging)) or 'unspecified'}",
+        f"Auth: {auth}",
+        f"Constraints: {', '.join(constraints) or 'none'}",
+    ]
+    if workflow_tokens:
+        summary_lines.append(f"Workflow states: {', '.join(workflow_tokens)}")
+    if implementation_notes:
+        summary_lines.append(
+            f"Implementation notes: {', '.join(dict.fromkeys(implementation_notes))}"
+        )
+
+    if requirement_excerpt:
+        summary_lines.extend(["", "Requirements excerpt:", requirement_excerpt])
+    if architecture_excerpt:
+        summary_lines.extend(["", "Architecture excerpt:", architecture_excerpt])
+
+    summary = "\n".join(summary_lines)
+    return summary[:max_chars]
 
 
 def _resolve_chunk_size() -> int:
@@ -717,19 +877,37 @@ class LLDWorker:
                     "architecture_doc": s.get("architecture_doc", "")[:2000],
                 }
 
+            state_dict = getattr(context, "state", {}) if isinstance(getattr(context, "state", None), dict) else {}
+            user_goal = str(state_dict.get("user_goal", "")).strip()
+            requirement_doc = str(state_dict.get("requirement_doc", "")).strip()
+            structured_task = _build_structured_context(user_goal, requirement_doc, task)
+
             MAX_LLD_INPUT_CHARS = int(os.getenv("LLD_MAX_INPUT_CHARS", "12000"))
 
             if len(task) > MAX_LLD_INPUT_CHARS:
-                logger.warning(
-                    "lld_agent input is %d chars, truncating to %d to avoid timeout",
-                    len(task),
-                    MAX_LLD_INPUT_CHARS,
+                if len(structured_task) >= 3000:
+                    logger.info(
+                        "LLDWorker: replacing oversized raw input (%d chars) with structured summary (%d chars)",
+                        len(task),
+                        len(structured_task),
+                    )
+                    task = structured_task
+                else:
+                    logger.warning(
+                        "lld_agent input is %d chars, truncating to %d to avoid timeout",
+                        len(task),
+                        MAX_LLD_INPUT_CHARS,
+                    )
+                    task = (
+                        task[:MAX_LLD_INPUT_CHARS]
+                        + "\n\n[... truncated for LLD processing ...]"
+                    )
+            elif len(task) > 6000 and len(structured_task) >= 3000:
+                logger.info(
+                    "LLDWorker: compressing large LLD input to structured summary (%d chars)",
+                    len(structured_task),
                 )
-
-                task = (
-                    task[:MAX_LLD_INPUT_CHARS]
-                    + "\n\n[... truncated for LLD processing ...]"
-                )
+                task = structured_task
 
             subprocess_input = json.dumps(
                 {
@@ -894,6 +1072,8 @@ class FrontendLLDWorker:
             or str(state.get("system_architect.output", "")).strip()
             or str(task).strip()
         )
+        # Use a compact structured summary instead of raw markdown blobs.
+        architecture_doc = _build_structured_context(user_input, requirement_doc, architecture_doc)
 
         result = self._agent.run(
             context=context,
@@ -1008,6 +1188,7 @@ class BackendLLDWorker:
             ).strip()
 
             context_state: dict[str, Any] = {}
+            state_dict = getattr(context, "state", {}) if isinstance(getattr(context, "state", None), dict) else {}
 
             if isinstance(getattr(context, "state", None), dict):
                 s = context.state
@@ -1033,8 +1214,6 @@ class BackendLLDWorker:
             
             # Only fall back to context.state if task is empty, and CAP the fallback
             if not lld_input and isinstance(getattr(context, "state", None), dict):
-                state_dict = context.state
-                
                 # Fallback chain with caps to prevent re-inflating the payload
                 fallback_lld = (
                     str(state_dict.get("lld.output", ""))[:4000]
@@ -1045,6 +1224,43 @@ class BackendLLDWorker:
                     lld_input = fallback_lld
                     logger.info(
                         "BackendLLDWorker: task was empty, using fallback from context.state (capped to 4000 chars)"
+                    )
+
+            if lld_input:
+                structured_payload = _build_structured_context(
+                    user_goal=str(state_dict.get("user_goal", "")),
+                    requirement_doc=str(state_dict.get("requirement_doc", "")),
+                    architecture_doc=lld_input,
+                )
+                if len(lld_input) > 7000 and len(structured_payload) >= 3000:
+                    logger.info(
+                        "BackendLLDWorker: replacing overly large backend payload (%d chars) with structured summary (%d chars)",
+                        len(lld_input),
+                        len(structured_payload),
+                    )
+                    lld_input = structured_payload
+                elif len(lld_input) < 1200 and len(structured_payload) > len(lld_input):
+                    logger.info(
+                        "BackendLLDWorker: original backend payload was small (%d chars); expanding with structured summary (%d chars)",
+                        len(lld_input),
+                        len(structured_payload),
+                    )
+                    lld_input = structured_payload
+                else:
+                    logger.debug(
+                        "BackendLLDWorker: keeping backend payload as-is (%d chars), structured summary would be %d chars",
+                        len(lld_input),
+                        len(structured_payload),
+                    )
+
+            if lld_input and len(lld_input) < 1200:
+                architecture_context = str(context_state.get("architecture_doc", "") or "").strip()
+                if architecture_context:
+                    appended = architecture_context[:2500]
+                    lld_input = f"{lld_input}\n\nArchitecture excerpt:\n{appended}"
+                    logger.info(
+                        "BackendLLDWorker: appended architecture excerpt to small backend payload, new size=%d",
+                        len(lld_input),
                     )
 
             # DEFENSIVE: Apply hard cap before subprocess to ensure summarized payload is never re-inflated
@@ -1114,6 +1330,10 @@ class GenericLLDWorker:
         self._agent_response_type = agent_response_type
 
     def run(self, task: str, context: "AgentContext | None" = None):
+        # TODO: Current remaining bottleneck is markdown-heavy generation rather than orchestration instability.
+        # TODO: Investigate replacing markdown chaining with structured JSON/YAML artifacts for services, APIs, schemas.
+        # TODO: Add adaptive compression when output size exceeds thresholds.
+        # TODO: Evaluate removing lld_agent as frontend/backend/generic are mature specialized workers.
         # TODO: generic_lld_agent receives summarized backend output as task parameter.
         # TODO: Future: decouple from backend stage entirely - run in parallel from system_architect.
         # TODO: This would enable independent LLD variants (frontend, backend, generic, mobile, API-only)
@@ -1220,23 +1440,66 @@ class GenericLLDWorker:
                     ),
                 },
             }
+
+            # Convert architecture input into a structured compact summary.
+            payload["architecture_doc"] = _build_structured_context(
+                payload["user_input"],
+                payload["requirement_doc"],
+                payload["architecture_doc"],
+            )
             
-            # Defensive cap on architecture_doc to prevent re-inflation
             generic_lld_max_input = int(os.getenv("GENERIC_LLD_MAX_INPUT_CHARS", "6000"))
-            if len(payload.get("architecture_doc", "")) > generic_lld_max_input:
-                original_arch_size = len(payload.get("architecture_doc", ""))
-                payload["architecture_doc"] = payload["architecture_doc"][:generic_lld_max_input]
-                logger.info(
-                    "GenericLLDWorker: architecture_doc capped from %d to %d chars",
-                    original_arch_size,
-                    generic_lld_max_input
-                )
+            for field_name in ("user_input", "requirement_doc", "architecture_doc"):
+                raw_value = str(payload.get(field_name, ""))
+                if len(raw_value) > generic_lld_max_input:
+                    original_size = len(raw_value)
+                    payload[field_name] = raw_value[:generic_lld_max_input]
+                    logger.info(
+                        "GenericLLDWorker: %s capped from %d to %d chars",
+                        field_name,
+                        original_size,
+                        generic_lld_max_input,
+                    )
             
+            # Detailed payload tracing
+            payload_sizes = {
+                "user_input": len(str(payload.get("user_input", ""))),
+                "requirement_doc": len(str(payload.get("requirement_doc", ""))),
+                "architecture_doc": len(str(payload.get("architecture_doc", ""))),
+                "context_state": len(json.dumps(payload.get("context_state", {}))),
+            }
             payload_json_size = len(json.dumps(payload))
+            logger.info(
+                "GenericLLDWorker payload breakdown: user_input=%d, requirement_doc=%d, architecture_doc=%d, context_state=%d, total_json=%d chars",
+                payload_sizes["user_input"],
+                payload_sizes["requirement_doc"],
+                payload_sizes["architecture_doc"],
+                payload_sizes["context_state"],
+                payload_json_size,
+            )
+            
+            # Enforce total payload cap
+            generic_lld_max_total_payload = int(os.getenv("GENERIC_LLD_MAX_TOTAL_PAYLOAD_CHARS", "10000"))
+            if payload_json_size > generic_lld_max_total_payload:
+                logger.warning(
+                    "GenericLLDWorker total payload exceeds %d chars (%d), truncating architecture_doc further",
+                    generic_lld_max_total_payload,
+                    payload_json_size,
+                )
+                excess = payload_json_size - generic_lld_max_total_payload
+                arch_doc = payload["architecture_doc"]
+                if len(arch_doc) > excess:
+                    payload["architecture_doc"] = arch_doc[:-excess]
+                    payload_json_size = len(json.dumps(payload))
+                    logger.info(
+                        "GenericLLDWorker payload truncated to %d chars",
+                        payload_json_size,
+                    )
+            
             logger.info(
                 "GenericLLDWorker final payload: task_received=%d chars, total_payload=%d chars",
                 task_size,
-                payload_json_size
+                payload_json_size,
             )
 
             completed = subprocess.run(
@@ -1751,6 +2014,309 @@ def _summarize_for_downstream(text: str, max_chars: int = 4000, focus: str = "ge
     return summary.strip()
 
 
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    raw_text = str(text or "").strip()
+    if not raw_text:
+        return None
+
+    try:
+        parsed = json.loads(raw_text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    start = raw_text.find("{")
+    end = raw_text.rfind("}")
+    if start >= 0 and end > start:
+        candidate = raw_text[start : end + 1]
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def _compact_artifact_payload_for_agent(text: str, focus: str = "general", max_chars: int = 4000) -> str:
+    parsed = _extract_json_object(text)
+    if not parsed:
+        return str(text or "")[:max_chars]
+
+    artifact = parsed.get("artifact") or parsed
+    if isinstance(artifact, dict):
+        bullets: list[str] = []
+        if focus in ("backend", "general"):
+            if artifact.get("core_services"):
+                bullets.append("Core Services: " + ", ".join(map(str, artifact["core_services"]))[:2000])
+            if artifact.get("api_endpoints"):
+                bullets.append("API Endpoints: " + ", ".join(map(str, artifact["api_endpoints"]))[:2000])
+            if artifact.get("data_contracts"):
+                bullets.append("Data Contracts: " + ", ".join(map(str, artifact["data_contracts"]))[:2000])
+            if artifact.get("auth_and_security"):
+                bullets.append("Security: " + ", ".join(map(str, artifact["auth_and_security"]))[:2000])
+        if focus in ("generic", "general"):
+            if artifact.get("integration_contracts"):
+                bullets.append("Integration Contracts: " + ", ".join(map(str, artifact["integration_contracts"]))[:2000])
+            if artifact.get("deployment_strategy"):
+                bullets.append("Deployment Strategy: " + ", ".join(map(str, artifact["deployment_strategy"]))[:2000])
+            if artifact.get("non_functional_constraints"):
+                bullets.append("Non-functional Constraints: " + ", ".join(map(str, artifact["non_functional_constraints"]))[:2000])
+        if bullets:
+            compact = "\n".join(bullets)[:max_chars]
+            return compact
+
+    if isinstance(parsed, dict):
+        architecture_analysis = str(parsed.get("architecture_analysis", "")).strip()
+        final_report = str(parsed.get("final_report", "")).strip()
+        sections = str(parsed.get("sections", "")).strip()
+
+        if focus == "backend":
+            compact_parts = []
+            if architecture_analysis:
+                compact_parts.append("Architecture Analysis:\n" + architecture_analysis[:2200])
+            if final_report:
+                compact_parts.append("Final Report:\n" + final_report[:1800])
+            if sections:
+                compact_parts.append("Sections:\n" + sections[:1200])
+            compact = "\n\n".join(compact_parts)
+            return compact[:max_chars] if compact else str(text or "")[:max_chars]
+
+        if focus == "generic":
+            compact_parts = []
+            if architecture_analysis:
+                compact_parts.append("Architecture Analysis:\n" + architecture_analysis[:1800])
+            if sections:
+                compact_parts.append("Sections:\n" + sections[:1800])
+            if final_report:
+                compact_parts.append("Final Report:\n" + final_report[:1000])
+            compact = "\n\n".join(compact_parts)
+            return compact[:max_chars] if compact else str(text or "")[:max_chars]
+
+        compact_parts = []
+        if sections:
+            compact_parts.append("Sections:\n" + sections[:1500])
+        if architecture_analysis:
+            compact_parts.append("Architecture Analysis:\n" + architecture_analysis[:1500])
+        if final_report:
+            compact_parts.append("Final Report:\n" + final_report[:1000])
+        compact = "\n\n".join(compact_parts)
+        return compact[:max_chars] if compact else str(text or "")[:max_chars]
+
+    return str(text or "")[:max_chars]
+
+
+def _build_compact_lld_artifact(task: str, context: "AgentContext | None") -> str:
+    _, _, _, create_agent_llm, _, _, _, GeminiConfig = _load_adk_components()
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT", os.getenv("GEMINI_PROJECT_ID", "eds-alchemy"))
+    location = os.getenv("GOOGLE_CLOUD_LOCATION", os.getenv("GEMINI_LOCATION", "us-central1"))
+    model = os.getenv("LLD_ARTIFACT_MODEL", "gemini-2.5-flash-lite")
+    max_output_tokens = int(os.getenv("LLD_ARTIFACT_MAX_OUTPUT_TOKENS", "1024"))
+    temperature = float(os.getenv("LLD_ARTIFACT_TEMPERATURE", "0"))
+
+    gemini_config = GeminiConfig(
+        project_id=project_id,
+        location=location,
+        agent_model=model,
+        validator_model=model,
+        agent_temperature=temperature,
+        validator_temperature=0.0,
+        max_output_tokens=max_output_tokens,
+    )
+
+    llm = create_agent_llm(gemini_config)
+    prompt = textwrap.dedent(
+        f"""
+        You are a compact architecture artifact builder.
+
+        Input:
+        {task}
+
+        Task:
+        Produce only valid JSON with the following top-level keys:
+        goal_summary, core_services, data_contracts, api_endpoints, auth_and_security,
+        deployment_strategy, integration_contracts, non_functional_constraints, summary.
+
+        Rules:
+        - Output a single JSON object and nothing else.
+        - Use arrays for list fields, strings for summary fields.
+        - Keep every list to at most 4 items.
+        - Do not include frontend UI, styling, responsiveness, or presentation details.
+        - Keep values concise, implementation-focused, and backend/integration oriented.
+        - If a field is not relevant, output an empty list or empty string.
+        """
+    )
+
+    response = llm.invoke([HumanMessage(content=prompt)])
+    raw = str(getattr(response, "content", "") or "").strip()
+    parsed = _extract_json_object(raw)
+    if parsed is None:
+        logger.warning(
+            "Compact LLD artifact builder produced non-JSON output, falling back to string summary."
+        )
+        final_report = raw.replace("\n", " ")[:2000]
+        artifact = {
+            "goal_summary": "",
+            "core_services": [],
+            "data_contracts": [],
+            "api_endpoints": [],
+            "auth_and_security": [],
+            "deployment_strategy": [],
+            "integration_contracts": [],
+            "non_functional_constraints": [],
+            "summary": final_report,
+        }
+    else:
+        artifact = parsed
+
+    sections = []
+    if isinstance(artifact.get("core_services"), list):
+        sections.append("Core services: " + ", ".join(map(str, artifact["core_services"])) )
+    if isinstance(artifact.get("data_contracts"), list):
+        sections.append("Data contracts: " + ", ".join(map(str, artifact["data_contracts"])) )
+    if isinstance(artifact.get("api_endpoints"), list):
+        sections.append("API endpoints: " + ", ".join(map(str, artifact["api_endpoints"])) )
+    if isinstance(artifact.get("integration_contracts"), list):
+        sections.append("Integration contracts: " + ", ".join(map(str, artifact["integration_contracts"])) )
+
+    sections_text = "\n".join(sections)[:2000]
+    analysis_text = str(artifact.get("summary", "") or "").strip()[:2000]
+    final_report_text = "Compact shared architecture artifact generated for downstream LLD agents."
+
+    output = {
+        "sections": sections_text,
+        "architecture_analysis": analysis_text,
+        "final_report": final_report_text,
+        "artifact": artifact,
+    }
+    return json.dumps(output, ensure_ascii=True)
+
+
+def _run_parallel_stages(
+    stage_specs: list[tuple[Any, str, str, str, int | None]],
+    context: "AgentContext | None",
+    state: dict[str, Any],
+    default_timeout: int,
+) -> None:
+    """Run multiple supervisor stage workers in parallel threads.
+
+    TODO: Migrate threaded orchestration to a cleaner executor/service
+    architecture instead of manual thread wrappers.
+    """
+    threads: list[threading.Thread] = []
+
+    def _wrap_stage(
+        run_stage_func: Any,
+        func: Any,
+        stage_name: str,
+        state_key: str,
+        task: str,
+        timeout_seconds: int | None,
+    ) -> None:
+        thread_name = threading.current_thread().name
+        logger.info(
+            "Thread %s starting stage %s (input=%d chars)",
+            thread_name,
+            stage_name,
+            len(str(task)),
+        )
+        try:
+            run_stage_func(
+                func,
+                stage_name,
+                state_key,
+                context,
+                state,
+                default_timeout,
+                task,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Supervisor threaded stage %s failed unexpectedly in %s: %s",
+                stage_name,
+                thread_name,
+                exc,
+            )
+
+    for func, stage_name, state_key, task, timeout in stage_specs:
+        thread = threading.Thread(
+            name=f"supervisor-stage-{stage_name}",
+            target=_wrap_stage,
+            args=(_run_stage, func, stage_name, state_key, task, timeout),
+            daemon=True,
+        )
+        thread.start()
+        threads.append(thread)
+
+    for thread in threads:
+        thread.join()
+
+
+def _run_stage(
+    func: Any,
+    stage_name: str,
+    state_key: str,
+    context: "AgentContext | None",
+    state: dict[str, Any],
+    default_timeout: int,
+    *args: Any,
+    timeout_seconds: int | None = None,
+) -> None:
+    effective_timeout = timeout_seconds if timeout_seconds is not None else default_timeout
+    start_ts = time.time()
+    thread_name = threading.current_thread().name
+
+    input_size = len(str(args[0])) if args else 0
+    logger.info(
+        "Starting supervisor stage: %s (thread=%s, timeout=%ss, input_size=%d chars)",
+        stage_name,
+        thread_name,
+        effective_timeout,
+        input_size,
+    )
+
+    completed, result = _run_with_timeout(func, effective_timeout, *args, context=context)
+    elapsed = time.time() - start_ts
+
+    if completed and not isinstance(result, Exception):
+        output_size = len(str(state.get(state_key, "")))
+        logger.info(
+            "Completed supervisor stage: %s (thread=%s) in %.3fs (input=%d chars, output=%d chars)",
+            stage_name,
+            thread_name,
+            elapsed,
+            input_size,
+            output_size,
+        )
+        return
+
+    message = f"[{stage_name} timed out after {effective_timeout}s]"
+    if isinstance(result, Exception):
+        message = f"[{stage_name} failed: {result}]"
+        logger.warning(
+            "Supervisor stage %s (thread=%s) failed after %.3fs: %s",
+            stage_name,
+            thread_name,
+            elapsed,
+            result,
+        )
+    else:
+        logger.warning(
+            "Supervisor stage %s (thread=%s) timed out after %.3fs (limit %ss, input_size=%d chars)",
+            stage_name,
+            thread_name,
+            elapsed,
+            effective_timeout,
+            input_size,
+        )
+
+    if callable(getattr(context, "set_state", None)):
+        context.set_state(state_key, message)
+        _store_agent_chunks(state_key.replace(".output", ""), message, context)
+
+
 def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> None:
     """Run missing worker stages directly so final output always contains all agent sections.
     
@@ -1778,61 +2344,6 @@ def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> Non
     def _missing(key: str) -> bool:
         return not str(state.get(key, "")).strip()
 
-    def _run_stage(
-        func: Any,
-        stage_name: str,
-        state_key: str,
-        *args: Any,
-        timeout_seconds: int | None = None,
-    ) -> None:
-            effective_timeout = timeout_seconds if timeout_seconds is not None else stage_timeout_seconds
-            start_ts = time.time()
-            
-            # Log profiling info for this stage
-            input_size = 0
-            if args:
-                # First positional arg is usually the task/input
-                input_size = len(str(args[0]))
-            
-            logger.info(
-                "Starting supervisor stage: %s (timeout=%ss, input_size=%d chars)",
-                stage_name,
-                effective_timeout,
-                input_size
-            )
-            
-            completed, result = _run_with_timeout(func, effective_timeout, *args, context=context)
-            elapsed = time.time() - start_ts
-            
-            if completed and not isinstance(result, Exception):
-                output_size = len(str(state.get(state_key, "")))
-                logger.info(
-                    "Completed supervisor stage: %s in %.3fs (input=%d chars, output=%d chars)",
-                    stage_name,
-                    elapsed,
-                    input_size,
-                    output_size
-                )
-                return
-
-            # Stage timed out or failed
-            message = f"[{stage_name} timed out after {effective_timeout}s]"
-            if isinstance(result, Exception):
-                message = f"[{stage_name} failed: {result}]"
-                logger.warning("Supervisor stage %s failed after %.3fs: %s", stage_name, elapsed, result)
-            else:
-                logger.warning(
-                    "Supervisor stage %s timed out after %.3fs (limit %ss, input_size=%d chars)",
-                    stage_name,
-                    elapsed,
-                    effective_timeout,
-                    input_size
-                )
-
-            if callable(getattr(context, "set_state", None)):
-                context.set_state(state_key, message)
-                _store_agent_chunks(state_key.replace(".output", ""), message, context)
-
     def _check_stage_failed(stage_name: str, output: str) -> bool:
         """Check if a stage output indicates failure (error message format)."""
         output_str = str(output or "").strip()
@@ -1847,7 +2358,15 @@ def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> Non
         return False
 
     if _missing("system_analyst.output"):
-        _run_stage(SystemAnalystWorker(AgentResponse).run, "system_analyst", "system_analyst.output", user_goal)
+        _run_stage(
+            SystemAnalystWorker(AgentResponse).run,
+            "system_analyst",
+            "system_analyst.output",
+            context,
+            state,
+            stage_timeout_seconds,
+            user_goal,
+        )
     
     if _check_stage_failed("system_analyst", state.get("system_analyst.output", "")):
         return
@@ -1858,6 +2377,9 @@ def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> Non
             SystemArchitectWorker(AgentResponse).run,
             "system_architect_agent",
             "system_architect.output",
+            context,
+            state,
+            stage_timeout_seconds,
             analyst_output,
         )
     
@@ -1865,18 +2387,7 @@ def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> Non
         return
 
     architect_output = str(state.get("system_architect.output", "")).strip() or analyst_output
-    if _missing("frontend_lld.output"):
-        # TODO: frontend_lld_agent and lld_agent are both frontend-oriented. 
-        # TODO: Consider future optimization: merge them or run frontend/backend/generic LLD agents independently in parallel instead of sequential chaining.
-        _run_stage(
-            FrontendLLDWorker(AgentResponse).run,
-            "frontend_lld_agent",
-            "frontend_lld.output",
-            architect_output,
-        )
-    
-    if _check_stage_failed("frontend_lld_agent", state.get("frontend_lld.output", "")):
-        return
+    frontend_output = str(state.get("frontend_lld.output", "")).strip() or architect_output
 
     frontend_output = str(state.get("frontend_lld.output", "")).strip() or architect_output
     lld_task = (
@@ -1887,90 +2398,81 @@ def _ensure_agent_outputs(user_goal: str, context: "AgentContext | None") -> Non
     architect_summary = str(state.get("system_architect.output", ""))[:3000]
     lld_task = f"{lld_task}\n\n---\n\nArchitecture Summary:\n{architect_summary}"
 
-    if _missing("lld.output"):
-        # TODO: Possible future optimization: merge frontend_lld_agent and lld_agent since both are frontend-oriented.
-        # TODO: Consider running frontend/backend/generic LLD agents independently in parallel instead of sequential chaining.
-        _run_stage(
-            LLDWorker(AgentResponse).run,
-            "lld_agent",
-            "lld.output",
-            lld_task,
-            timeout_seconds=int(os.getenv("SUPERVISOR_LLD_STAGE_TIMEOUT_SECONDS", "180")),
-        )
-    
+    backend_lld_max_input = int(os.getenv("BACKEND_LLD_MAX_INPUT_CHARS", "8000"))
+    generic_lld_max_input = int(os.getenv("GENERIC_LLD_MAX_INPUT_CHARS", "6000"))
+    lld_timeout = int(os.getenv("SUPERVISOR_LLD_STAGE_TIMEOUT_SECONDS", "180"))
+
+    if _missing("frontend_lld.output") or _missing("lld.output"):
+        stage_specs: list[tuple[Any, str, str, str, int | None]] = []
+        if _missing("frontend_lld.output"):
+            stage_specs.append(
+                (
+                    FrontendLLDWorker(AgentResponse).run,
+                    "frontend_lld_agent",
+                    "frontend_lld.output",
+                    architect_output,
+                    None,
+                )
+            )
+        if _missing("lld.output"):
+            stage_specs.append(
+                (
+                    LLDWorker(AgentResponse).run,
+                    "lld_agent",
+                    "lld.output",
+                    lld_task,
+                    lld_timeout,
+                )
+            )
+        _run_parallel_stages(stage_specs, context, state, stage_timeout_seconds)
+
+    if _check_stage_failed("frontend_lld_agent", state.get("frontend_lld.output", "")):
+        return
     if _check_stage_failed("lld_agent", state.get("lld.output", "")):
         return
-    
-    _populate_lld_fields_from_output(context)
 
+    _populate_lld_fields_from_output(context)
     lld_output = str(state.get("lld.output", "")).strip() or frontend_output
-    
-    # Summarize lld_agent output for backend_lld_agent to prevent context explosion
-    backend_lld_max_input = int(os.getenv("BACKEND_LLD_MAX_INPUT_CHARS", "8000"))
-    lld_output_for_backend = _summarize_for_downstream(
-        lld_output, 
-        max_chars=backend_lld_max_input, 
-        focus="backend"
+
+    backend_input = _compact_artifact_payload_for_agent(
+        lld_output,
+        focus="backend",
+        max_chars=backend_lld_max_input,
     )
-    
-    lld_original_size = len(lld_output)
-    lld_summarized_size = len(lld_output_for_backend)
-    
-    if _missing("backend_lld.output"):
-        logger.info(
-            "backend_lld_agent preparation: original lld size=%d, summarized size=%d (reduction=%.1f%%)",
-            lld_original_size,
-            lld_summarized_size,
-            100.0 * (1.0 - lld_summarized_size / max(lld_original_size, 1)) if lld_original_size > 0 else 0
-        )
-        _run_stage(
-            BackendLLDWorker(AgentResponse).run,
-            "backend_lld_agent",
-            "backend_lld.output",
-            lld_output_for_backend,
-            timeout_seconds=backend_stage_timeout_seconds,
-        )
-    
+    generic_input = _compact_artifact_payload_for_agent(
+        lld_output,
+        focus="generic",
+        max_chars=generic_lld_max_input,
+    )
+
+    if _missing("backend_lld.output") or _missing("generic_lld.output"):
+        stage_specs: list[tuple[Any, str, str, str, int | None]] = []
+        if _missing("backend_lld.output"):
+            stage_specs.append(
+                (
+                    BackendLLDWorker(AgentResponse).run,
+                    "backend_lld_agent",
+                    "backend_lld.output",
+                    backend_input,
+                    backend_stage_timeout_seconds,
+                )
+            )
+        if _missing("generic_lld.output"):
+            stage_specs.append(
+                (
+                    GenericLLDWorker(AgentResponse).run,
+                    "generic_lld_agent",
+                    "generic_lld.output",
+                    generic_input,
+                    stage_timeout_seconds,
+                )
+            )
+        _run_parallel_stages(stage_specs, context, state, stage_timeout_seconds)
+
     if _check_stage_failed("backend_lld_agent", state.get("backend_lld.output", "")):
         return
-
-    backend_output = str(state.get("backend_lld.output", "")).strip() or lld_output
-    
-    # Validate backend LLD output relevance
-    is_relevant, reason = _is_backend_lld_output_relevant(backend_output, user_goal)
-    if not is_relevant:
-        logger.warning("Backend LLD output validation failed: %s", reason)
-        error_msg = f"Backend LLD output is off-topic. Reason: {reason}"
-        logger.error(error_msg)
-        if context is not None and callable(getattr(context, "set_state", None)):
-            context.set_state("supervisor.validation_failed", True)
-            context.set_state("supervisor.validation_error", reason)
+    if _check_stage_failed("generic_lld_agent", state.get("generic_lld.output", "")):
         return
-    
-    backend_output_for_generic = backend_output
-    generic_lld_max_input = int(os.getenv("GENERIC_LLD_MAX_INPUT_CHARS", "6000"))
-    
-    # Summarize backend_lld_agent output for generic_lld_agent to prevent further context explosion
-    if len(backend_output) > generic_lld_max_input:
-        backend_output_for_generic = _summarize_for_downstream(
-            backend_output,
-            max_chars=generic_lld_max_input,
-            focus="generic"
-        )
-        logger.info(
-            "generic_lld_agent preparation: original backend_lld size=%d, summarized size=%d (reduction=%.1f%%)",
-            len(backend_output),
-            len(backend_output_for_generic),
-            100.0 * (1.0 - len(backend_output_for_generic) / max(len(backend_output), 1))
-        )
-    
-    if _missing("generic_lld.output"):
-        _run_stage(
-            GenericLLDWorker(AgentResponse).run,
-            "generic_lld_agent",
-            "generic_lld.output",
-            backend_output_for_generic,
-        )
 
 
 def build_supervisor_agent():
@@ -2041,6 +2543,7 @@ def build_supervisor_agent():
             "2) Pass the system_analyst output to system_architect_agent. "
             "3) Pass only the architecture doc to frontend_lld_agent. "
             "4) Pass only the system_analyst output to lld_agent — do NOT pass frontend LLD output. "
+            "   lld_agent must focus on backend, integration, data contracts, and orchestration, and must not duplicate frontend/UI analysis. "
             "5) Pass the lld_agent output to backend_lld_agent. "
             "6) Pass the backend_lld_agent output to generic_lld_agent. "
             "7) Return a combined markdown response with these sections only: "
