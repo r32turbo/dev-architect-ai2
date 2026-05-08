@@ -40,6 +40,7 @@ register_agent_adk()
 
 # ✅ KEY FIX: import build_backend_lld_prompt instead of BACKEND_LLD_PROMPT
 from .prompts import build_backend_lld_prompt, BACKEND_LLD_TASK
+from .optimizer import optimize_backend_lld_output
 
 if TYPE_CHECKING:
     from reusableagents.context import AgentContext  # type: ignore
@@ -187,6 +188,18 @@ def _resolve_lld_input(
     return ""
 
 
+def _extract_response_text(response: object) -> str:
+    if hasattr(response, "output"):
+        raw_output = response.output
+    else:
+        raw_output = response
+
+    if isinstance(raw_output, str):
+        return raw_output
+
+    return str(raw_output or "")
+
+
 def _backend_output_needs_refinement(output: str) -> bool:
     if not output:
         return True
@@ -233,7 +246,7 @@ def run_backend_lld(
 
     chunks = chunk_text(resolved_input, chunk_size=8000, overlap=500)
     outputs = []
-    max_output_per_chunk = int(os.getenv("BACKEND_LLD_MAX_OUTPUT_PER_CHUNK", "8000"))
+    max_output_per_chunk = int(os.getenv("BACKEND_LLD_MAX_OUTPUT_PER_CHUNK", "18000"))
     
     for i, chunk in enumerate(chunks):
 
@@ -261,12 +274,18 @@ def run_backend_lld(
 
         response = agent.run(**run_kwargs)
 
-        output = (
-            response.output
-            if hasattr(response, "output")
-            else str(response)
+        raw_output = response.output if hasattr(response, "output") else response
+        output = _extract_response_text(response)
+
+        logger.warning(
+            "Backend LLD response=%s raw_output_type=%s raw_output_len=%s normalized_output_len=%d normalized_output_preview=%r",
+            type(response).__name__,
+            type(raw_output).__name__,
+            len(raw_output) if hasattr(raw_output, "__len__") else "n/a",
+            len(output),
+            output[:120],
         )
-        
+
         # Enforce per-chunk output cap
         output_size = len(output)
         if output_size > max_output_per_chunk:
@@ -276,7 +295,18 @@ def run_backend_lld(
                 output_size,
                 max_output_per_chunk,
             )
-            output = output[:max_output_per_chunk].rstrip() + "\n\n[... truncated ...]"
+            sample = output[:max_output_per_chunk]
+            logger.warning(
+                "Backend LLD truncation sample len=%d preview_end=%r",
+                len(sample),
+                sample[-120:],
+            )
+            output = sample + "\n\n[... truncated ...]"
+            logger.warning(
+                "Backend LLD truncated output len=%d preview=%r",
+                len(output),
+                output[:120],
+            )
         
         logger.info(
             "Backend LLD chunk %d: generated %d chars (cap=%d), token_est=%d",
@@ -295,17 +325,10 @@ def run_backend_lld(
     for word in blacklist:
         combined = combined.replace(word, "")
 
-    # Enforce total output cap
-    max_total_output = int(os.getenv("BACKEND_LLD_MAX_TOTAL_OUTPUT", "10000"))
+    max_total_output = int(os.getenv("BACKEND_LLD_MAX_TOTAL_OUTPUT", "18000"))
     combined_size = len(combined)
-    if combined_size > max_total_output:
-        logger.warning(
-            "Backend LLD total output exceeded cap: %d > %d chars, truncating final output",
-            combined_size,
-            max_total_output,
-        )
-        combined = combined[:max_total_output].rstrip() + "\n\n[... final output truncated ...]"
 
+    # Validate the full generated output before compressing/truncating.
     if _backend_output_needs_refinement(combined):
         logger.warning(
             "Backend LLD output failed validation (length=%d). Retrying once with an expansion hint.",
@@ -327,10 +350,17 @@ def run_backend_lld(
             retry_kwargs["context"] = context
 
         retry_response = agent.run(**retry_kwargs)
-        retry_output = (
-            retry_response.output
-            if hasattr(retry_response, "output")
-            else str(retry_response)
+
+        retry_raw_output = retry_response.output if hasattr(retry_response, "output") else retry_response
+        retry_output = _extract_response_text(retry_response)
+
+        logger.warning(
+            "Backend LLD retry response=%s raw_output_type=%s raw_output_len=%s normalized_output_len=%d normalized_output_preview=%r",
+            type(retry_response).__name__,
+            type(retry_raw_output).__name__,
+            len(retry_raw_output) if hasattr(retry_raw_output, "__len__") else "n/a",
+            len(retry_output),
+            retry_output[:120],
         )
 
         if retry_output and not _backend_output_needs_refinement(retry_output):
@@ -342,7 +372,21 @@ def run_backend_lld(
             )
 
         if combined_size > max_total_output:
-            combined = combined[:max_total_output].rstrip() + "\n\n[... final output truncated ...]"
+            combined = combined[:max_total_output] + "\n\n[... final output truncated ...]"
+
+    # Compress valid backend output down to the target 6k-10k range if needed.
+    if len(combined) > 10000:
+        combined = optimize_backend_lld_output(combined, target_min=6000, target_max=10000)
+
+    max_total_output = int(os.getenv("BACKEND_LLD_MAX_TOTAL_OUTPUT", "18000"))
+    combined_size = len(combined)
+    if combined_size > max_total_output:
+        logger.warning(
+            "Backend LLD total output exceeded cap: %d > %d chars, truncating final output",
+            combined_size,
+            max_total_output,
+        )
+        combined = combined[:max_total_output] + "\n\n[... final output truncated ...]"
 
     logger.info(
         "Backend LLD profiling: total=%d chars (cap=%d), token_est=%d, compression_applied",
